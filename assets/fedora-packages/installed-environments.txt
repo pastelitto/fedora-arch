@@ -1,0 +1,2 @@
+ID                      Name                  Installed
+kde-desktop-environment KDE Plasma Workspaces       yes

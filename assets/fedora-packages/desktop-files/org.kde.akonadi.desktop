@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 Nicolas Fella <nicolas.fella@gmx.de>
+# SPDX-License-Identifier: LGPL-2.0-or-later
+
+[Desktop Entry]
+Name=KDE PIM
+Name[ar]=إدارة المعلومات الشخصية كيدي
+Name[bg]=Управление на лични данни на KDE
+Name[ca]=KDE PIM
+Name[ca@valencia]=KDE PIM
+Name[cs]=KDE PIM
+Name[de]=Persönliche Informationsverwaltung von KDE
+Name[es]=KDE PIM
+Name[eu]=KDE PIM
+Name[fr]=KDE PIM
+Name[he]=KDE ניהול פרטים אישיים
+Name[ia]=KDE PIM
+Name[it]=KDE PIM
+Name[ka]=KDE PIM
+Name[ko]=KDE PIM
+Name[nl]=KDE PIM
+Name[pl]=KDE PIM
+Name[pt_BR]=KDE PIM
+Name[ru]=KDE PIM
+Name[sk]=KDE PIM
+Name[sl]=KDE PIM
+Name[sv]=KDE personlig informationshantering
+Name[tr]=KDE Kişisel Bilgi Yönetimi
+Name[ug]=KDE PIM
+Name[uk]=KDE PIM
+Name[zh_CN]=KDE PIM
+Name[zh_TW]=KDE PIM
+Icon=org.kde.kontact
+Type=Application
+NoDisplay=true

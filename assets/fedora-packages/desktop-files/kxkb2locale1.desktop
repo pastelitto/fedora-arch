@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Kxkb to Locale1 synchronization daemon
+Exec=kxkb2locale1
+NoDisplay=true
+X-DBUS-StartupType=None
+X-KDE-autostart-phase=0
+OnlyShowIn=KDE

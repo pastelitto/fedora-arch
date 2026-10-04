@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: CC0-1.0
+# SPDX-FileCopyrightText: 2024 Nicolas Fella <nicolas.fella@gmx.de>
+[Desktop Entry]
+Type=Application
+Name=SSH Credentials
+Name[ar]=بيانات اعتماد SSH
+Name[bg]=Идентификационни данни за SSH
+Name[ca]=Credencials de SSH
+Name[ca@valencia]=Credencials de SSH
+Name[cs]=Přihlašovací údaje SSH
+Name[de]=SSH-Anmeldedaten
+Name[en_GB]=SSH Credentials
+Name[eo]=SSH-Legitimaĵoj
+Name[es]=Credenciales SSH
+Name[eu]=SSH egiaztagiriak
+Name[fi]=SSH-todennustiedot
+Name[fr]=Identifiants pour SSH
+Name[gl]=Credenciais de SSH
+Name[he]=פרטי גישה ב־SSH
+Name[hu]=SSH hitelesítési adatok
+Name[ia]=Credentiales de SSH
+Name[is]=SSH-auðkenni
+Name[it]=Credenziali SSH
+Name[ka]=SSH-ის ავტორიზაციის დეტალები
+Name[ko]=SSH 자격 증명
+Name[lt]=SSH prisijungimo duomenys
+Name[lv]=SSH akreditācijas dati
+Name[nl]=SSH-credentials
+Name[nn]=SSH-brukardata
+Name[pl]=Dane dostępowe SSH
+Name[pt_BR]=Credenciais SSH
+Name[ro]=Acreditări SSH
+Name[ru]=Учётные данные SSH
+Name[sa]=SSH प्रमाणपत्रम्
+Name[sk]=SSH prihlasovacie údaje
+Name[sl]=Poverilnice SSH
+Name[sv]=SSH-inloggningsinformation
+Name[tr]=SSH Kimlik Bilgileri
+Name[uk]=Реєстраційні дані SSH
+Name[zh_CN]=SSH 身份验证信息
+Name[zh_TW]=SSH 認證資訊
+Exec=ksshaskpass
+NoDisplay=true
+Icon=dialog-password

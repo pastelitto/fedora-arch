@@ -1,0 +1,10 @@
+ID                    Name                   Installed
+admin-tools           Administration Tools         yes
+desktop-accessibility Desktop accessibility        yes
+kde-apps              KDE Applications             yes
+kde-desktop           KDE                          yes
+kde-media             KDE Multimedia support       yes
+kde-pim               KDE PIM                      yes
+libreoffice           LibreOffice                  yes
+sound-and-video       Sound and Video              yes
+Groups: 8 (8 installed, 0 available)
