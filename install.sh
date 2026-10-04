@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Fedora-like Arch installer
-# UEFI only. Designed to be launched from the Arch ISO.
-# Layout: GPT, 1 GiB FAT32 ESP mounted at /boot, ext4 root.
+# Fedora-like Arch post-install configurator
+# UEFI only. Run this AFTER entering the installed system with: arch-chroot /mnt
+# Assumptions: base Arch is installed, networking works, and the EFI System
+# Partition is already mounted directly at /boot.
 
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-TARGET=/mnt
 LOG_FILE=/var/log/fedora-arch-installer.log
 
 WALLPAPER_ASSET_DIR="$SCRIPT_DIR/assets/wallpapers"
@@ -87,32 +87,49 @@ require_uefi() {
 }
 
 # -----------------------------------------------------------------------------
-# Stage 1: questions + disk installation from Arch ISO
+# Questions — this script runs inside the installed Arch chroot
 # -----------------------------------------------------------------------------
+require_installed_arch_chroot() {
+    [[ -f /etc/arch-release ]] || fatal "This does not look like an Arch installation."
+
+    local root_source
+    root_source="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+    case "$root_source" in
+        airootfs|overlay|/dev/loop*|"")
+            fatal "Run this script AFTER: arch-chroot /mnt (not from the Arch ISO root shell)."
+            ;;
+    esac
+}
+
+require_boot_esp() {
+    mountpoint -q /boot || fatal "/boot is not a mounted filesystem. Mount your EFI System Partition at /boot first."
+
+    local fstype
+    fstype="$(findmnt -n -o FSTYPE /boot 2>/dev/null || true)"
+    case "$fstype" in
+        vfat|fat|msdos) ;;
+        *) fatal "/boot is mounted as '$fstype', not FAT/VFAT. This installer expects the EFI System Partition mounted directly at /boot." ;;
+    esac
+}
+
 collect_answers() {
     clear || true
     cat <<'BANNER'
 ================================================================
-        Fedora-style Arch installer — UEFI only
+   Fedora-style Arch configurator — post arch-chroot, UEFI only
 ================================================================
-Disk layout created by this installer:
-  1) 1 GiB FAT32 EFI System Partition -> /boot
-  2) ext4 root partition             -> /
+This script DOES NOT partition, format, mount, or pacstrap anything.
+
+Expected workflow:
+  1) Partition/install Arch yourself
+  2) Mount the EFI System Partition directly at /boot
+  3) arch-chroot /mnt
+  4) clone this repo and run ./install.sh
 
 Normal pacman package installation is INTERACTIVE. No --noconfirm is
 used for desktop/program transactions, so pacman can ask about groups,
 providers and package choices.
 BANNER
-
-    echo
-    lsblk -dpno NAME,SIZE,MODEL,TYPE | awk '$4=="disk" {print}'
-    echo
-    while true; do
-        read -r -p "Install disk (example /dev/vda or /dev/nvme0n1): " INSTALL_DISK
-        [[ -b "$INSTALL_DISK" ]] || { echo "Not a block device."; continue; }
-        [[ "$(lsblk -dnro TYPE "$INSTALL_DISK" 2>/dev/null)" == disk ]] || { echo "Choose a whole disk."; continue; }
-        break
-    done
 
     while true; do
         read -r -p "Username: " USERNAME
@@ -196,8 +213,9 @@ BANNER
     fi
 
     echo
-    echo "---------------- Installation summary ----------------"
-    printf 'Disk:               %s  (WILL BE ERASED)\n' "$INSTALL_DISK"
+    echo "---------------- Configuration summary ----------------"
+    printf 'Root filesystem:    %s\n' "$(findmnt -n -o SOURCE /)"
+    printf 'EFI /boot:          %s (%s)\n' "$(findmnt -n -o SOURCE /boot)" "$(findmnt -n -o FSTYPE /boot)"
     printf 'Desktop:            %s\n' "$DESKTOP"
     printf 'Fedora app bundle:  %s\n' "$([[ $FEDORA_DEFAULT_APPS -eq 1 ]] && echo yes || echo no)"
     printf 'ALHP:               %s\n' "$([[ $ENABLE_ALHP -eq 1 ]] && echo "$ALHP_LEVEL" || echo no)"
@@ -205,90 +223,13 @@ BANNER
     printf 'Initramfs:          %s\n' "$INITRAMFS"
     printf 'Boot loader:        %s\n' "$BOOTLOADER"
     printf 'NVIDIA 580xx:       %s\n' "$([[ $INSTALL_NVIDIA_580 -eq 1 ]] && echo yes || echo no)"
-    echo "------------------------------------------------------"
+    echo "-------------------------------------------------------"
     echo
-    read -r -p "Type ERASE to wipe $INSTALL_DISK and continue: " confirm
-    [[ "$confirm" == ERASE ]] || exit 0
-}
-
-ensure_iso_tools() {
-    local missing=()
-    command -v sgdisk >/dev/null || missing+=(gptfdisk)
-    command -v mkfs.fat >/dev/null || missing+=(dosfstools)
-    command -v pacstrap >/dev/null || missing+=(arch-install-scripts)
-    if ((${#missing[@]})); then
-        info "Installing missing Arch ISO utilities"
-        pacman -Sy --needed "${missing[@]}"
-    fi
-}
-
-partition_disk() {
-    info "Partitioning $INSTALL_DISK"
-    umount -R "$TARGET" 2>/dev/null || true
-    swapoff -a 2>/dev/null || true
-
-    wipefs -af "$INSTALL_DISK"
-    sgdisk --zap-all "$INSTALL_DISK"
-    sgdisk -n 1:0:+1G -t 1:ef00 -c 1:'EFI System' "$INSTALL_DISK"
-    sgdisk -n 2:0:0   -t 2:8300 -c 2:'Arch Root' "$INSTALL_DISK"
-    partprobe "$INSTALL_DISK" || true
-    udevadm settle
-    sleep 1
-
-    EFI_PART="$(lsblk -nrpo NAME,PARTN "$INSTALL_DISK" | awk '$2==1 {print $1; exit}')"
-    ROOT_PART="$(lsblk -nrpo NAME,PARTN "$INSTALL_DISK" | awk '$2==2 {print $1; exit}')"
-    [[ -b "$EFI_PART" && -b "$ROOT_PART" ]] || fatal "Could not resolve the new partitions."
-
-    mkfs.fat -F 32 -n EFI "$EFI_PART"
-    mkfs.ext4 -F -L ARCHROOT "$ROOT_PART"
-
-    mount "$ROOT_PART" "$TARGET"
-    mkdir -p "$TARGET/boot"
-    mount "$EFI_PART" "$TARGET/boot"
-    ok "ESP=$EFI_PART mounted at /boot; root=$ROOT_PART"
-}
-
-write_stage2_config() {
-    local cfg="$TARGET/root/fedora-arch/.installer.env"
-    umask 077
-    {
-        declare -p USERNAME USER_PASSWORD ROOT_PASSWORD HOSTNAME
-        declare -p DESKTOP FEDORA_DEFAULT_APPS ENABLE_ALHP ALHP_LEVEL ENABLE_CHAOTIC
-        declare -p INITRAMFS BOOTLOADER INSTALL_NVIDIA_580
-        declare -p INSTALL_DISK EFI_PART ROOT_PART
-    } > "$cfg"
-}
-
-stage1_install() {
-    require_root
-    is_archiso || fatal "Run the first stage from the Arch ISO, not from an already-installed system."
-    require_uefi
-    collect_answers
-    ensure_iso_tools
-    partition_disk
-
-    info "Installing the minimal Arch base system"
-    pacstrap -K "$TARGET" base
-
-    genfstab -U "$TARGET" > "$TARGET/etc/fstab"
-
-    info "Copying this repository into the target system"
-    rm -rf "$TARGET/root/fedora-arch"
-    cp -a "$SCRIPT_DIR" "$TARGET/root/fedora-arch"
-    write_stage2_config
-
-    info "Entering the new Arch installation"
-    arch-chroot "$TARGET" /root/fedora-arch/install.sh --stage2
-
-    rm -f "$TARGET/root/fedora-arch/.installer.env"
-    sync
-    echo
-    ok "Installation finished."
-    echo "You can now run: umount -R /mnt && reboot"
+    ask_yes_no "Continue with configuration?" y || exit 0
 }
 
 # -----------------------------------------------------------------------------
-# Stage 2: target system helpers
+# Installed-system helpers
 # -----------------------------------------------------------------------------
 backup_once() {
     local path="$1"
@@ -722,9 +663,13 @@ EOF_DRACUT
 }
 
 kernel_cmdline() {
-    local uuid
-    uuid="$(blkid -s UUID -o value "$ROOT_PART")"
-    [[ -n "$uuid" ]] || fatal "Could not determine root filesystem UUID for $ROOT_PART"
+    local uuid source
+    uuid="$(findmnt -n -o UUID / 2>/dev/null || true)"
+    if [[ -z "$uuid" ]]; then
+        source="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+        [[ -n "$source" ]] && uuid="$(blkid -s UUID -o value "$source" 2>/dev/null || true)"
+    fi
+    [[ -n "$uuid" ]] || fatal "Could not determine the UUID of the root filesystem."
     printf 'root=UUID=%s rw quiet splash loglevel=3 rd.udev.log_priority=3 vt.global_cursor_default=0' "$uuid"
 }
 
@@ -823,12 +768,12 @@ install_bootloader() {
     esac
 }
 
-stage2_install() {
+post_chroot_install() {
     require_root
-    local cfg=/root/fedora-arch/.installer.env
-    [[ -f "$cfg" ]] || fatal "Stage-2 config not found."
-    # shellcheck disable=SC1090
-    source "$cfg"
+    require_installed_arch_chroot
+    require_uefi
+    require_boot_esp
+    collect_answers
 
     exec > >(tee -a "$LOG_FILE") 2>&1
 
@@ -850,8 +795,6 @@ stage2_install() {
     configure_initramfs
     install_bootloader
 
-    rm -f "$cfg"
-
     echo
     echo '================================================================'
     echo 'DONE'
@@ -865,13 +808,11 @@ stage2_install() {
     printf 'Chaotic-AUR:       %s\n' "$([[ $ENABLE_CHAOTIC -eq 1 ]] && echo enabled || echo disabled)"
     echo
     echo "Installer log: $LOG_FILE"
+    echo "Exit the chroot, unmount /mnt, and reboot when ready."
 }
 
 main() {
-    case "${1:-}" in
-        --stage2) stage2_install ;;
-        *) stage1_install ;;
-    esac
+    post_chroot_install
 }
 
 main "$@"
