@@ -1,0 +1,22 @@
+Id                   : kde-apps
+Name                 : KDE Applications
+Description          : A set of commonly used KDE applications
+Installed            : yes
+Order                : 
+Langonly             : 
+Uservisible          : yes
+Repositories         : @System
+Default packages     : kcalc
+                     : keditbookmarks
+                     : kmahjongg
+                     : kmines
+                     : kmouth
+                     : kpat
+                     : krdc
+                     : krusader
+                     : ktorrent
+                     : neochat
+                     : okular
+                     : qrca
+                     : skanpage
+

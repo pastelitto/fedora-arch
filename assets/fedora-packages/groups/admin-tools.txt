@@ -1,0 +1,13 @@
+Id                   : admin-tools
+Name                 : Administration Tools
+Description          : This group is a collection of graphical administration tools for the system, such as for managing user accounts and configuring system hardware.
+Installed            : yes
+Order                : 
+Langonly             : 
+Uservisible          : yes
+Repositories         : @System
+Mandatory packages   : abrt-desktop
+                     : gnome-disk-utility
+                     : setroubleshoot
+                     : system-config-language
+

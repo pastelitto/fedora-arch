@@ -1,0 +1,329 @@
+==================== assets/fedora-packages/groups/admin-tools.txt ====================
+Id                   : admin-tools
+Name                 : Administration Tools
+Description          : This group is a collection of graphical administration tools for the system, such as for managing user accounts and configuring system hardware.
+Installed            : yes
+Order                : 
+Langonly             : 
+Uservisible          : yes
+Repositories         : @System
+Mandatory packages   : abrt-desktop
+                     : gnome-disk-utility
+                     : setroubleshoot
+                     : system-config-language
+
+
+==================== assets/fedora-packages/groups/desktop-accessibility.txt ====================
+Id                   : desktop-accessibility
+Name                 : Desktop accessibility
+Description          : This group contains essential accessibility stack to be used with desktop environments.
+Installed            : yes
+Order                : 
+Langonly             : 
+Uservisible          : yes
+Repositories         : @System
+Default packages     : at-spi2-atk
+                     : at-spi2-core
+                     : brltty
+                     : orca
+                     : speech-dispatcher
+
+
+==================== assets/fedora-packages/groups/kde-apps.txt ====================
+Id                   : kde-apps
+Name                 : KDE Applications
+Description          : A set of commonly used KDE applications
+Installed            : yes
+Order                : 
+Langonly             : 
+Uservisible          : yes
+Repositories         : @System
+Default packages     : kcalc
+                     : keditbookmarks
+                     : kmahjongg
+                     : kmines
+                     : kmouth
+                     : kpat
+                     : krdc
+                     : krusader
+                     : ktorrent
+                     : neochat
+                     : okular
+                     : qrca
+                     : skanpage
+
+
+==================== assets/fedora-packages/groups/kde-desktop.txt ====================
+Id                   : kde-desktop
+Name                 : KDE
+Description          : The KDE Plasma Workspaces, a highly-configurable graphical user interface which includes a panel, desktop, system icons and desktop widgets, and many powerful KDE applications.
+Installed            : yes
+Order                : 
+Langonly             : 
+Uservisible          : yes
+Repositories         : @System
+Mandatory packages   : kcm-plasmalogin
+                     : plasma-desktop
+                     : plasma-login-manager
+                     : plasma-setup
+                     : plasma-workspace
+                     : plasma-workspace-wallpapers
+Default packages     : NetworkManager-config-connectivity-fedora
+                     : PackageKit-command-not-found
+                     : abrt-desktop
+                     : akonadi-server
+                     : akonadi-server-mysql
+                     : ark
+                     : audiocd-kio
+                     : aurorae
+                     : bluedevil
+                     : breeze-icon-theme
+                     : colord-kde
+                     : cups-pk-helper
+                     : dolphin
+                     : fedora-flathub-remote
+                     : fedora-workstation-repositories
+                     : ffmpegthumbs
+                     : filelight
+                     : firewall-config
+                     : flatpak-kcm
+                     : fprintd-pam
+                     : glibc-all-langpacks
+                     : kaccounts-integration-qt6
+                     : kaccounts-providers
+                     : kcharselect
+                     : kde-connect
+                     : kde-gtk-config
+                     : kde-inotify-survey
+                     : kde-partitionmanager
+                     : kde-settings-plasmalogin
+                     : kde-settings-pulseaudio
+                     : kdebugsettings
+                     : kdegraphics-thumbnailers
+                     : kdenetwork-filesharing
+                     : kdeplasma-addons
+                     : kdialog
+                     : kdnssd
+                     : kf6-baloo-file
+                     : kfind
+                     : khelpcenter
+                     : kinfocenter
+                     : kio-admin
+                     : kio-gdrive
+                     : kjournald
+                     : kmenuedit
+                     : konsole
+                     : krdp
+                     : krfb
+                     : kscreen
+                     : kscreenlocker
+                     : ksshaskpass
+                     : kunifiedpush
+                     : kwalletmanager5
+                     : kwin
+                     : kwrite
+                     : libappindicator-gtk3
+                     : pam-kwallet
+                     : phonon-qt6-backend-vlc
+                     : pinentry-qt
+                     : plasma-breeze
+                     : plasma-desktop-doc
+                     : plasma-discover
+                     : plasma-discover-notifier
+                     : plasma-disks
+                     : plasma-drkonqi
+                     : plasma-nm
+                     : plasma-nm-l2tp
+                     : plasma-nm-openconnect
+                     : plasma-nm-openswan
+                     : plasma-nm-openvpn
+                     : plasma-nm-pptp
+                     : plasma-nm-vpnc
+                     : plasma-pa
+                     : plasma-print-manager
+                     : plasma-systemmonitor
+                     : plasma-thunderbolt
+                     : plasma-vault
+                     : plasma-welcome
+                     : polkit-kde
+                     : samba-usershares
+                     : signon-kwallet-extension
+                     : spectacle
+                     : systemd-oomd-defaults
+                     : thermald
+                     : toolbox
+                     : udisks2
+                     : vlc-plugin-gstreamer
+                     : xwaylandvideobridge
+Optional packages    : plasma-pk-updates
+
+
+==================== assets/fedora-packages/groups/kde-media.txt ====================
+Id                   : kde-media
+Name                 : KDE Multimedia support
+Description          : Multimedia support for KDE
+Installed            : yes
+Order                : 
+Langonly             : 
+Uservisible          : yes
+Repositories         : @System
+Default packages     : digikam
+                     : dragon
+                     : elisa-player
+                     : gwenview
+                     : k3b
+                     : kamera
+                     : kamoso
+                     : kolourpaint
+
+
+==================== assets/fedora-packages/groups/kde-pim.txt ====================
+Id                   : kde-pim
+Name                 : KDE PIM
+Description          : Personal information management tools for KDE
+Installed            : yes
+Order                : 
+Langonly             : 
+Uservisible          : yes
+Repositories         : @System
+Default packages     : akregator
+                     : kaddressbook
+                     : kleopatra
+                     : kmail
+                     : kontact
+                     : korganizer
+
+
+==================== assets/fedora-packages/groups/libreoffice.txt ====================
+Id                   : libreoffice
+Name                 : LibreOffice
+Description          : LibreOffice Productivity Suite
+Installed            : yes
+Order                : 
+Langonly             : 
+Uservisible          : yes
+Repositories         : @System
+Mandatory packages   : libreoffice-calc
+                     : libreoffice-emailmerge
+                     : libreoffice-graphicfilter
+                     : libreoffice-impress
+                     : libreoffice-writer
+Optional packages    : libreoffice-base
+                     : libreoffice-draw
+                     : libreoffice-math
+                     : libreoffice-pyuno
+
+
+==================== assets/fedora-packages/groups/sound-and-video.txt ====================
+Id                   : sound-and-video
+Name                 : Sound and Video
+Description          : From CD recording to playing audio CDs and multimedia files, this package group allows you to work with sound and video on the system.
+Installed            : yes
+Order                : 
+Langonly             : 
+Uservisible          : yes
+Repositories         : @System
+Optional packages    : abcde
+                     : alsamixergui
+                     : amarok
+                     : asunder
+                     : audacious
+                     : audacity
+                     : audacity-freeworld
+                     : avidemux
+                     : brasero
+                     : cdcollect
+                     : cdlabelgen
+                     : cdparanoia
+                     : cdrskin
+                     : denemo
+                     : devedeng
+                     : dragon
+                     : dvdauthor
+                     : dvdisaster
+                     : dvdstyler
+                     : dvgrab
+                     : easytag
+                     : festvox-bdl-arctic-hts
+                     : festvox-clb-arctic-hts
+                     : festvox-rms-arctic-hts
+                     : genisoimage
+                     : gnome-sound-recorder
+                     : grip
+                     : gtk-v4l
+                     : gtkpod
+                     : icedax
+                     : id3v2
+                     : isomaster
+                     : juk
+                     : k3b
+                     : kdenlive
+                     : kid3
+                     : kmix
+                     : kodi
+                     : kover
+                     : lingot
+                     : lxmusic
+                     : mencoder
+                     : mikmod
+                     : milkytracker
+                     : mkvtoolnix-gui
+                     : motion
+                     : mpd
+                     : mpgtx
+                     : mplayer
+                     : mplayer-doc
+                     : multimedia-menus
+                     : mythmusic
+                     : mythtv-backend
+                     : mythtv-frontend
+                     : mythtv-setup
+                     : openfst-tools
+                     : opengrm-ngram-tools
+                     : parole
+                     : pavucontrol
+                     : pavumeter
+                     : picard
+                     : pipewire
+                     : pipewire-jack-audio-connection-kit
+                     : pipewire-pulseaudio
+                     : pitivi
+                     : pocketsphinx
+                     : pocketsphinx-plugin
+                     : qmmp
+                     : qmmp-plugin-pack
+                     : quodlibet
+                     : rakarrack
+                     : regionset
+                     : rhythmbox
+                     : rosegarden4
+                     : rtmpdump
+                     : showtime
+                     : sound-juicer
+                     : soundconverter
+                     : soundtracker
+                     : sox
+                     : streamripper
+                     : tvtime
+                     : uade
+                     : v4l2ucp
+                     : vdr
+                     : vdr-burn
+                     : vdr-epgsearch
+                     : vdr-femon
+                     : vdr-mp3
+                     : vdr-mplayer
+                     : vdr-osdteletext
+                     : vdr-remote
+                     : vdr-streamdev-client
+                     : vdr-streamdev-server
+                     : vdrsync
+                     : vlc
+                     : volumeicon
+                     : vorbis-tools
+                     : wireplumber
+                     : wodim
+                     : xfburn
+                     : xmp
+
+

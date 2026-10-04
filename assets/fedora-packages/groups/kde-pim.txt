@@ -1,0 +1,15 @@
+Id                   : kde-pim
+Name                 : KDE PIM
+Description          : Personal information management tools for KDE
+Installed            : yes
+Order                : 
+Langonly             : 
+Uservisible          : yes
+Repositories         : @System
+Default packages     : akregator
+                     : kaddressbook
+                     : kleopatra
+                     : kmail
+                     : kontact
+                     : korganizer
+

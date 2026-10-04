@@ -1,0 +1,14 @@
+Id                   : desktop-accessibility
+Name                 : Desktop accessibility
+Description          : This group contains essential accessibility stack to be used with desktop environments.
+Installed            : yes
+Order                : 
+Langonly             : 
+Uservisible          : yes
+Repositories         : @System
+Default packages     : at-spi2-atk
+                     : at-spi2-core
+                     : brltty
+                     : orca
+                     : speech-dispatcher
+

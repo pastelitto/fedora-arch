@@ -1,0 +1,17 @@
+Id                   : kde-media
+Name                 : KDE Multimedia support
+Description          : Multimedia support for KDE
+Installed            : yes
+Order                : 
+Langonly             : 
+Uservisible          : yes
+Repositories         : @System
+Default packages     : digikam
+                     : dragon
+                     : elisa-player
+                     : gwenview
+                     : k3b
+                     : kamera
+                     : kamoso
+                     : kolourpaint
+

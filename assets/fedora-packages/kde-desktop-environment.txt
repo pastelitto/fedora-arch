@@ -1,0 +1,58 @@
+Id                   : kde-desktop-environment
+Name                 : KDE Plasma Workspaces
+Description          : The KDE Plasma Workspaces, a highly-configurable graphical user interface which includes a panel, desktop, system icons and desktop widgets, and many powerful KDE applications.
+Order                : 10
+Installed            : True
+Repositories         : @System
+Required groups      : admin-tools
+                     : base-graphical
+                     : core
+                     : desktop-accessibility
+                     : dial-up
+                     : fonts
+                     : guest-desktop-agents
+                     : hardware-support
+                     : input-methods
+                     : kde-desktop
+                     : multimedia
+                     : networkmanager-submodules
+                     : printing
+                     : standard
+Default groups       : firefox
+                     : kde-apps
+                     : kde-media
+                     : kde-pim
+                     : libreoffice
+Optional groups      : 3d-printing
+                     : cloud-management
+                     : kde-education
+
+Id                   : kde-desktop-environment
+Name                 : KDE Plasma Workspaces
+Description          : The KDE Plasma Workspaces, a highly-configurable graphical user interface which includes a panel, desktop, system icons and desktop widgets, and many powerful KDE applications.
+Order                : 10
+Installed            : False
+Repositories         : fedora, updates
+Required groups      : admin-tools
+                     : base-graphical
+                     : core
+                     : desktop-accessibility
+                     : dial-up
+                     : fonts
+                     : guest-desktop-agents
+                     : hardware-support
+                     : input-methods
+                     : kde-desktop
+                     : multimedia
+                     : networkmanager-submodules
+                     : printing
+                     : standard
+Default groups       : firefox
+                     : kde-apps
+                     : kde-media
+                     : kde-pim
+                     : libreoffice
+Optional groups      : 3d-printing
+                     : cloud-management
+                     : kde-education
+

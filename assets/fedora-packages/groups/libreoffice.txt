@@ -1,0 +1,18 @@
+Id                   : libreoffice
+Name                 : LibreOffice
+Description          : LibreOffice Productivity Suite
+Installed            : yes
+Order                : 
+Langonly             : 
+Uservisible          : yes
+Repositories         : @System
+Mandatory packages   : libreoffice-calc
+                     : libreoffice-emailmerge
+                     : libreoffice-graphicfilter
+                     : libreoffice-impress
+                     : libreoffice-writer
+Optional packages    : libreoffice-base
+                     : libreoffice-draw
+                     : libreoffice-math
+                     : libreoffice-pyuno
+
