@@ -1,0 +1,1 @@
+../../../X11/xinit/xinitrc.d/50-xinput.sh

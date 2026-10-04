@@ -1,0 +1,3 @@
+Put either:
+  1) your extracted Fedora F44/ directory here, or
+  2) ordinary .jpg/.png/.webp wallpapers directly in this directory.

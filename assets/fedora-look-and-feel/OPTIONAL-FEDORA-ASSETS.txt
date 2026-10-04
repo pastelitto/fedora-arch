@@ -1,0 +1,2 @@
+Optional: copy the extracted Fedora look-and-feel directories here.
+The installer will use them if present; otherwise it generates Fedora Light itself.
