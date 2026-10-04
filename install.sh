@@ -247,7 +247,7 @@ CHAOTIC
     local cleaned inserted
     cleaned="$(mktemp)"
     inserted="$(mktemp)"
-    strip_repo_sections /etc/pacman.conf "$cleaned" '^\[(core|extra|multilib)-x86-64-v[234]\]$'
+    strip_repo_sections /etc/pacman.conf "$cleaned" '^[[](core|extra|multilib)-x86-64-v[234][]]$'
 
     awk -v lvl="$ALHP_LEVEL" '
         /^\[core\]$/ {
@@ -275,7 +275,7 @@ CHAOTIC
 configure_chaotic_repo() {
     local cleaned
     cleaned="$(mktemp)"
-    strip_repo_sections /etc/pacman.conf "$cleaned" '^\[chaotic-aur\]$'
+    strip_repo_sections /etc/pacman.conf "$cleaned" '^[[]chaotic-aur[]]$'
     install -m 0644 "$cleaned" /etc/pacman.conf
     rm -f "$cleaned"
 
