@@ -101,3 +101,4 @@ Repository selection happens **before the normal package install**.
 - Booster 0.13+ supports Plymouth through `enable_plymouth: true`; the installer enables it. Booster produces `/boot/booster-*.img`, so verify the bootloader references those files before rebooting.
 - The personal tuning option is hardware-specific. Leave it off on unrelated hardware.
 # fedora-arch
+# fedora-arch
