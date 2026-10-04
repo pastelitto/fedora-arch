@@ -358,49 +358,120 @@ EOF_HOSTS
 }
 
 # ----------------------------- package install -----------------------------
-install_packages() {
-    info "STAGE 2 — installing Arch/KDE/Fedora-experience packages"
-
-    local required=(
-        sudo networkmanager
-        plasma-desktop plasma-workspace systemsettings plasma-login-manager
-        breeze breeze-gtk breeze-icons breeze-cursors
-        noto-fonts noto-fonts-emoji
-        konsole dolphin kwrite ark okular spectacle
-        discover packagekit packagekit-qt6
-        plymouth plymouth-kcm
-        polkit-kde-agent plasma-nm plasma-pa kscreen plasma-systemmonitor
-        xdg-desktop-portal-kde xdg-desktop-portal-gtk
-    )
-
-    pacman -S --needed --noconfirm "${required[@]}"
-
-    # Keep your existing desktop/app set, but skip renamed/removed packages instead
-    # of aborting the entire installation.
-    local optional=(
-        firefox lutris steam
-        dolphin-plugins ffmpegthumbs kde-inotify-survey kdegraphics-thumbnailers
-        kimageformats kio-admin kio-extras qqc2-desktop-style libappindicator-gtk3
-        qt6-imageformats tesseract tesseract-data-eng unrar xsettingsd flatpak
-        flatpak-kcm kde-gtk-config kdecoration kdeplasma-addons kgamma kpipewire
-        kwayland-integration qqc2-breeze-style
-        plasma-disks partitionmanager print-manager powerdevil plasma-welcome
-        fwupd cups system-config-printer
-        fish micro git base-devel
-    )
-
+install_repo_packages() {
+    local label="$1"; shift
     local available=() missing=() pkg
-    for pkg in "${optional[@]}"; do
+
+    for pkg in "$@"; do
         if pacman -Si "$pkg" >/dev/null 2>&1; then
             available+=("$pkg")
         else
             missing+=("$pkg")
         fi
     done
-    ((${#available[@]})) && pacman -S --needed --noconfirm "${available[@]}"
-    ((${#missing[@]})) && warn "Skipped unavailable optional packages: ${missing[*]}"
 
-    # Sudo: normal wheel access + preserve your old narrowly-scoped NOPASSWD tools.
+    if ((${#available[@]})); then
+        info "Installing $label (${#available[@]} packages)"
+        pacman -S --needed --noconfirm "${available[@]}"
+    fi
+
+    if ((${#missing[@]})); then
+        warn "$label: package(s) not found in the enabled repositories: ${missing[*]}"
+    fi
+}
+
+install_packages() {
+    info "STAGE 2 — installing Arch packages that reproduce Fedora KDE"
+
+    # Core packages required for a usable Fedora-like Plasma desktop.  These are
+    # Arch package names, not Fedora RPM names.
+    local core_required=(
+        sudo networkmanager
+        plasma-desktop plasma-workspace plasma-workspace-wallpapers
+        systemsettings plasma-login-manager kwin kscreen kscreenlocker powerdevil
+        breeze breeze-gtk breeze-icons breeze-cursors
+        noto-fonts noto-fonts-emoji
+        discover packagekit packagekit-qt6 flatpak flatpak-kcm
+        plymouth plymouth-kcm
+        polkit-kde-agent plasma-nm plasma-pa plasma-systemmonitor
+        xdg-desktop-portal-kde xdg-desktop-portal-gtk
+        pipewire pipewire-alsa pipewire-pulse wireplumber
+        bluez bluez-utils
+        cups
+    )
+
+    pacman -S --needed --noconfirm "${core_required[@]}"
+
+    # Fedora 44 KDE group -> Arch package mapping.
+    # Source groups captured from the live Fedora install:
+    #   kde-desktop, kde-apps, kde-media, kde-pim, libreoffice,
+    #   desktop-accessibility and admin-tools.
+    # Fedora-only configuration/branding RPMs are intentionally NOT listed here;
+    # those are reproduced later from assets/fedora-*.
+    local fedora_kde_defaults=(
+        # kde-desktop defaults / Plasma integration
+        akonadi mariadb
+        ark audiocd-kio aurorae bluedevil colord-kde cups-pk-helper dolphin
+        ffmpegthumbs filelight firewall-config firewalld
+        fprintd
+        kaccounts-integration kaccounts-providers
+        kcharselect kdeconnect kde-gtk-config kde-inotify-survey partitionmanager
+        kdebugsettings kdegraphics-thumbnailers kdenetwork-filesharing kdeplasma-addons
+        kdialog kdnssd baloo kfind khelpcenter kinfocenter kio-admin kio-gdrive
+        kjournald kmenuedit konsole krdp krfb ksshaskpass kunifiedpush
+        kwalletmanager kate libappindicator kwallet-pam phonon-qt6-vlc pinentry
+        plasma-disks drkonqi
+        networkmanager-l2tp networkmanager-openconnect networkmanager-strongswan
+        networkmanager-openvpn networkmanager-pptp networkmanager-vpnc
+        print-manager plasma-thunderbolt plasma-vault plasma-welcome
+        samba signon-kwallet-extension spectacle thermald toolbox udisks2
+        vlc-plugin-gstreamer xwaylandvideobridge
+
+        # kde-apps group
+        kcalc keditbookmarks kmahjongg kmines kmouth kpat krdc krusader ktorrent
+        neochat okular qrca skanpage
+
+        # kde-media group
+        digikam dragon elisa gwenview k3b kamera kamoso kolourpaint
+
+        # kde-pim group
+        akregator kaddressbook kleopatra kmail kontact korganizer
+
+        # desktop-accessibility group
+        # Fedora's old at-spi2-atk split is folded into Arch's at-spi2-core.
+        at-spi2-core brltty orca speech-dispatcher
+
+        # admin-tools group: Fedora's SELinux/setroubleshoot and
+        # system-config-language are Fedora-specific; GNOME Disks is portable.
+        gnome-disk-utility
+
+        # Fedora LibreOffice group maps to Arch's complete suite package.
+        libreoffice-fresh
+    )
+
+    install_repo_packages "Fedora KDE default application set" "${fedora_kde_defaults[@]}"
+
+    # Useful pieces from the user's previous Arch setup.  These are not claimed
+    # to be Fedora defaults, but are retained from the original installer.
+    local personal_extras=(
+        firefox lutris steam
+        dolphin-plugins kimageformats kio-extras qqc2-desktop-style
+        qt6-imageformats tesseract tesseract-data-eng unrar xsettingsd
+        kdecoration kgamma kpipewire kwayland-integration qqc2-breeze-style
+        system-config-printer fwupd
+        fish micro git base-devel
+    )
+    install_repo_packages "existing personal Arch extras" "${personal_extras[@]}"
+
+    # Fedora ships a Flathub remote package.  On Arch reproduce the result
+    # directly instead of attempting to install a Fedora-specific RPM.
+    if command -v flatpak >/dev/null 2>&1; then
+        flatpak remote-add --if-not-exists flathub \
+            https://flathub.org/repo/flathub.flatpakrepo \
+            || warn "Could not add Flathub right now; add it later if the network is unavailable."
+    fi
+
+    # Sudo: normal wheel access + preserve the old narrowly-scoped NOPASSWD tools.
     install -d -m 0750 /etc/sudoers.d
     cat > /etc/sudoers.d/10-wheel <<'EOF_SUDO'
 %wheel ALL=(ALL:ALL) ALL
@@ -415,11 +486,18 @@ ${USERNAME} ALL=(ALL) NOPASSWD: /usr/bin/nvidia-settings
 EOF_SUDO_USER
     chmod 0440 "/etc/sudoers.d/90-${USERNAME}-hardware-tools"
 
+    # Fedora-like default services where the corresponding unit exists.
     systemctl enable NetworkManager.service
     systemctl disable sddm.service >/dev/null 2>&1 || true
     systemctl enable plasmalogin.service
 
-    ok "Core desktop packages installed"
+    for unit in bluetooth.service cups.service firewalld.service systemd-oomd.service fstrim.timer; do
+        if systemctl cat "$unit" >/dev/null 2>&1; then
+            systemctl enable "$unit" >/dev/null 2>&1 || warn "Could not enable $unit"
+        fi
+    done
+
+    ok "Fedora KDE application/package set installed using Arch package names"
 }
 
 install_nvidia_580_stack() {
