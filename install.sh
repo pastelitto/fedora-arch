@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Fedora-like Arch post-install configurator
 # UEFI only. Run this AFTER entering the installed system with: arch-chroot /mnt
-# Assumptions: base Arch is installed, networking works, and the EFI System
-# Partition is already mounted directly at /boot.
+# Assumptions: base Arch is installed and networking works. The EFI System
+# Partition is mounted at /boot for the standard layout, or at /efi when a
+# Linux filesystem was selected for /boot by format.sh.
 
 set -Eeuo pipefail
 
@@ -20,6 +21,7 @@ FEDORA_USER_CONFIG_ASSET_DIR="$SCRIPT_DIR/assets/fedora-user-config"
 # BOOT_IMAGE are intentionally never stored here; bootloaders add their own
 # root device information.
 KERNEL_EXTRA_ARGS=()
+EFI_MOUNT=""
 
 # -----------------------------------------------------------------------------
 # UI helpers
@@ -107,13 +109,27 @@ require_installed_arch_chroot() {
 }
 
 require_boot_esp() {
-    mountpoint -q /boot || fatal "/boot is not a mounted filesystem. Mount your EFI System Partition at /boot first."
+    # /boot may itself be the FAT ESP (the normal/default layout), or format.sh
+    # may have created a Linux-filesystem /boot plus a separate FAT ESP at /efi.
+    mountpoint -q /boot || fatal "/boot is not mounted. Run format.sh or mount the boot filesystem first."
 
-    local fstype
-    fstype="$(findmnt -n -o FSTYPE /boot 2>/dev/null || true)"
-    case "$fstype" in
-        vfat|fat|msdos) ;;
-        *) fatal "/boot is mounted as '$fstype', not FAT/VFAT. This installer expects the EFI System Partition mounted directly at /boot." ;;
+    local boot_fs efi_fs
+    boot_fs="$(findmnt -n -o FSTYPE /boot 2>/dev/null || true)"
+    case "$boot_fs" in
+        vfat|fat|msdos)
+            EFI_MOUNT=/boot
+            ;;
+        *)
+            if mountpoint -q /efi; then
+                efi_fs="$(findmnt -n -o FSTYPE /efi 2>/dev/null || true)"
+                case "$efi_fs" in
+                    vfat|fat|msdos) EFI_MOUNT=/efi ;;
+                    *) fatal "/efi exists but is '$efi_fs', not a FAT EFI System Partition." ;;
+                esac
+            else
+                fatal "/boot is '$boot_fs', so a separate FAT EFI System Partition must be mounted at /efi."
+            fi
+            ;;
     esac
 }
 
@@ -126,17 +142,19 @@ collect_answers() {
 This script DOES NOT partition, format, mount, or pacstrap anything.
 
 Expected workflow:
-  1) Partition/install Arch yourself
-  2) Mount the EFI System Partition directly at /boot
-  3) arch-chroot /mnt
-  4) clone this repo and run ./install.sh
+  1) Run ./format.sh from the Arch ISO (or prepare/mount manually)
+  2) arch-chroot /mnt
+  3) run ./install.sh
+
+format.sh supports the normal FAT ESP at /boot, or an advanced Linux /boot
+with a separate FAT ESP at /efi (GRUB only).
 
 Like Fedora 44+, user/password/hostname setup is deferred to the desktop's
 first-boot OOBE (Plasma Setup on KDE, GNOME Initial Setup on GNOME).
 
-Normal pacman package installation is INTERACTIVE. No --noconfirm is
-used for desktop/program transactions, so pacman can ask about groups,
-providers and package choices.
+Package transactions are automatic (--noconfirm). Preferred providers are
+installed explicitly first (for example PipeWire JACK), so pacman does not
+stop on JACK/provider questions during the unattended part of the setup.
 BANNER
 
     ask_choice "Desktop environment" 1 \
@@ -151,6 +169,29 @@ BANNER
         FEDORA_DEFAULT_APPS=1
     else
         FEDORA_DEFAULT_APPS=0
+    fi
+
+    if [[ "$DESKTOP" == kde ]]; then
+        if ask_yes_no "Let Discover manage native packages + offline system updates (Arch/ALHP/CachyOS/Chaotic)?" y; then
+            ENABLE_DISCOVER_SYSTEM=1
+        else
+            ENABLE_DISCOVER_SYSTEM=0
+        fi
+
+        if ask_yes_no "Apply KDE style Pastelitto (your saved KDE configuration) to the first user?" n; then
+            APPLY_PASTELITTO_KDE=1
+        else
+            APPLY_PASTELITTO_KDE=0
+        fi
+    else
+        ENABLE_DISCOVER_SYSTEM=0
+        APPLY_PASTELITTO_KDE=0
+    fi
+
+    if ask_yes_no "Install Fish and make it the default shell for the first OOBE user?" y; then
+        INSTALL_FISH=1
+    else
+        INSTALL_FISH=0
     fi
 
     if ask_yes_no "Enable ALHP optimized repositories?" y; then
@@ -200,6 +241,14 @@ BANNER
         2) BOOTLOADER=systemd-boot ;;
         3) BOOTLOADER=limine ;;
     esac
+
+    # systemd-boot/Limine handling in this project expects the kernel files on
+    # the ESP mounted at /boot.  A Linux-filesystem /boot + /efi layout is
+    # intentionally supported through GRUB only.
+    if [[ "$EFI_MOUNT" != /boot && "$BOOTLOADER" != grub ]]; then
+        warn "A separate ESP at $EFI_MOUNT with non-FAT /boot requires GRUB in this installer. Forcing GRUB."
+        BOOTLOADER=grub
+    fi
 
     if ask_yes_no "Install NVIDIA 580xx legacy DKMS packages (Pascal/GTX 1050)?" n; then
         INSTALL_NVIDIA_580=1
@@ -285,28 +334,29 @@ BANNER
     root_fstype="$(findmnt -n -o FSTYPE / 2>/dev/null || true)"
     local f2fs_default=n
     [[ "$root_fstype" == f2fs ]] && f2fs_default=y
-    if ask_yes_no "Optimize F2FS entries in /etc/fstab for performance + reduced writes?" "$f2fs_default"; then
+    if ask_yes_no "Preserve/validate F2FS performance + reduced-write options from format.sh?" "$f2fs_default"; then
         OPTIMIZE_F2FS=1
-        if ask_yes_no "If F2FS compression feature exists, automatically compress new files (compress_extension=*)?" y; then
-            F2FS_COMPRESS_ALL=1
-        else
-            F2FS_COMPRESS_ALL=0
-        fi
     else
         OPTIMIZE_F2FS=0
-        F2FS_COMPRESS_ALL=0
     fi
+    # Advanced F2FS compression/GC options are now selected only by format.sh
+    # after real mount probes; install.sh never injects untested options.
+    F2FS_COMPRESS_ALL=0
 
     echo
     echo "---------------- Configuration summary ----------------"
     printf 'Root filesystem:    %s (%s)\n' "$(findmnt -n -o SOURCE /)" "$root_fstype"
-    printf 'EFI /boot:          %s (%s)\n' "$(findmnt -n -o SOURCE /boot)" "$(findmnt -n -o FSTYPE /boot)"
+    printf '/boot:              %s (%s)\n' "$(findmnt -n -o SOURCE /boot)" "$(findmnt -n -o FSTYPE /boot)"
+    printf 'EFI mount:          %s -> %s (%s)\n' "$EFI_MOUNT" "$(findmnt -n -o SOURCE "$EFI_MOUNT")" "$(findmnt -n -o FSTYPE "$EFI_MOUNT")"
     printf 'Desktop:            %s\n' "$DESKTOP"
     printf 'Fedora app bundle:  %s\n' "$([[ $FEDORA_DEFAULT_APPS -eq 1 ]] && echo yes || echo no)"
+    printf 'Discover system:    %s\n' "$([[ $ENABLE_DISCOVER_SYSTEM -eq 1 ]] && echo 'native + offline + global spoof' || echo 'Flatpak/add-ons only')"
+    printf 'Pastelitto KDE:      %s\n' "$([[ $APPLY_PASTELITTO_KDE -eq 1 ]] && echo yes || echo no)"
+    printf 'Fish default shell: %s\n' "$([[ $INSTALL_FISH -eq 1 ]] && echo yes || echo no)"
     printf 'ALHP:               %s\n' "$([[ $ENABLE_ALHP -eq 1 ]] && echo "$ALHP_LEVEL" || echo no)"
     printf 'CachyOS repo:       %s\n' "$([[ $ENABLE_CACHYOS -eq 1 ]] && echo yes || echo no)"
     printf 'Chaotic-AUR:        %s\n' "$([[ $ENABLE_CHAOTIC -eq 1 ]] && echo yes || echo no)"
-    printf 'zswap:              enabled (zstd, 30%% pool)\n'
+    printf 'zswap:              enabled (lz4, 30%% pool; zram off)\n'
     printf 'Initramfs:          %s\n' "$INITRAMFS"
     printf 'Boot loader:        %s\n' "$BOOTLOADER"
     printf 'NVIDIA 580xx:       %s\n' "$([[ $INSTALL_NVIDIA_580 -eq 1 ]] && echo yes || echo no)"
@@ -328,6 +378,17 @@ backup_once() {
     [[ -e "${path}.fedora-arch.bak" ]] || cp -a "$path" "${path}.fedora-arch.bak"
 }
 
+# Package transactions are intentionally unattended.  Explicit provider
+# packages (notably pipewire-jack) are installed before desktop groups so the
+# default provider selection cannot silently pull jack2 instead.
+pacman_install() {
+    pacman -S --needed --noconfirm "$@"
+}
+
+pacman_remove() {
+    pacman -Rns --noconfirm "$@"
+}
+
 strip_repo_sections() {
     local input="$1" output="$2" pattern="$3"
     awk -v pat="$pattern" '
@@ -346,12 +407,76 @@ enable_multilib() {
     fi
 }
 
+configure_pacman_preferences() {
+    info "Applying preferred pacman.conf UI/download settings"
+    backup_once /etc/pacman.conf
+
+    # Remove duplicate active instances before writing a single canonical one.
+    sed -i -E \
+        -e '/^[[:space:]]*Color[[:space:]]*$/d' \
+        -e '/^[[:space:]]*CheckSpace[[:space:]]*$/d' \
+        -e '/^[[:space:]]*VerbosePkgLists[[:space:]]*$/d' \
+        -e '/^[[:space:]]*ParallelDownloads[[:space:]]*=/d' \
+        -e '/^[[:space:]]*DownloadUser[[:space:]]*=/d' \
+        /etc/pacman.conf
+
+    # Put the requested options inside [options], immediately before the first
+    # repository section.  Keep syslog/progress/sandbox settings at defaults.
+    local tmp
+    tmp="$(mktemp)"
+    awk '
+        BEGIN { inserted=0 }
+        /^\[[^]]+\]$/ && $0 != "[options]" && !inserted {
+            print "Color"
+            print "CheckSpace"
+            print "VerbosePkgLists"
+            print "ParallelDownloads = 5"
+            print "DownloadUser = alpm"
+            print ""
+            inserted=1
+        }
+        { print }
+        END {
+            if (!inserted) {
+                print "Color"
+                print "CheckSpace"
+                print "VerbosePkgLists"
+                print "ParallelDownloads = 5"
+                print "DownloadUser = alpm"
+            }
+        }
+    ' /etc/pacman.conf > "$tmp"
+    install -m0644 "$tmp" /etc/pacman.conf
+    rm -f "$tmp"
+}
+
+prepare_chroot_transaction_hooks() {
+    install -d /etc/pacman.d/hooks
+
+    # PackageKit's pacman hook talks to the system D-Bus. During arch-chroot
+    # there is no activatable PackageKit service, so the hook only creates noisy
+    # false errors. Mask it temporarily; remove the mask before the installer exits.
+    ln -sfn /dev/null /etc/pacman.d/hooks/90-packagekit-refresh.hook
+
+    # If dracut was selected, stop mkinitcpio before the first kernel/package
+    # transaction, not only near the end. This prevents competing initramfs
+    # generation throughout the installation.
+    if [[ "$INITRAMFS" == dracut || "$INITRAMFS" == booster ]]; then
+        ln -sfn /dev/null /etc/pacman.d/hooks/90-mkinitcpio-install.hook
+        ln -sfn /dev/null /etc/pacman.d/hooks/60-mkinitcpio-remove.hook
+    fi
+}
+
+restore_runtime_packagekit_hook() {
+    rm -f /etc/pacman.d/hooks/90-packagekit-refresh.hook
+}
+
 bootstrap_chaotic_trust() {
     info "Bootstrapping Chaotic-AUR signing key and mirrorlist"
     pacman-key --recv-key 3056513887B78AEB --keyserver keyserver.ubuntu.com || \
         pacman-key --recv-key 3056513887B78AEB --keyserver hkps://keyserver.ubuntu.com
     pacman-key --lsign-key 3056513887B78AEB
-    pacman -U --needed \
+    pacman -U --needed --noconfirm \
         'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst' \
         'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst'
 }
@@ -374,8 +499,8 @@ configure_alhp() {
 Include = /etc/pacman.d/chaotic-mirrorlist
 CHAOTIC_TMP
 
-    pacman --config "$tmpconf" -Syy
-    pacman --config "$tmpconf" -S --needed alhp-keyring alhp-mirrorlist
+    pacman --config "$tmpconf" -Syy --noconfirm
+    pacman --config "$tmpconf" -S --needed --noconfirm alhp-keyring alhp-mirrorlist
     rm -f "$tmpconf"
 
     cleaned="$(mktemp)"
@@ -420,8 +545,8 @@ bootstrap_cachyos_trust() {
 [cachyos]
 Server = https://mirror.cachyos.org/repo/x86_64/cachyos
 CACHY_TMP
-    pacman --config "$tmpconf" -Syy
-    pacman --config "$tmpconf" -S --needed cachyos-keyring cachyos-mirrorlist
+    pacman --config "$tmpconf" -Syy --noconfirm
+    pacman --config "$tmpconf" -S --needed --noconfirm cachyos-keyring cachyos-mirrorlist
     rm -f "$tmpconf"
 }
 
@@ -468,6 +593,7 @@ CHAOTIC_PERM
 configure_repositories_first() {
     info "Configuring repositories BEFORE kernel/desktop applications"
     backup_once /etc/pacman.conf
+    configure_pacman_preferences
     enable_multilib
     pacman-key --init
     pacman-key --populate archlinux
@@ -480,7 +606,7 @@ configure_repositories_first() {
     configure_chaotic
 
     info "Synchronizing and upgrading with repository priority: ALHP/Arch > CachyOS > Chaotic-AUR"
-    pacman -Syyu
+    pacman -Syyu --noconfirm
 }
 
 configure_base_identity() {
@@ -494,8 +620,8 @@ configure_base_identity() {
 }
 
 # Install only package names that currently exist in enabled pacman repositories.
-# The actual pacman transaction remains interactive: NO --noconfirm.
-install_available_interactive() {
+# Package transactions are automatic.
+install_available_auto() {
     local label="$1"; shift
     local available=() missing=() pkg
     for pkg in "$@"; do
@@ -507,7 +633,7 @@ install_available_interactive() {
     done
     if ((${#available[@]})); then
         info "$label"
-        pacman -S --needed "${available[@]}"
+        pacman_install "${available[@]}"
     fi
     if ((${#missing[@]})); then
         warn "Not present in enabled binary repos, so skipped: ${missing[*]}"
@@ -519,7 +645,7 @@ install_aur_package_temp_builder() {
     local pkg="$1" url="https://aur.archlinux.org/${1}.git"
     local builder="fedoraarch-build"
     info "Building AUR package needed for first boot: $pkg"
-    pacman -S --needed base-devel git sudo
+    pacman_install base-devel git sudo
 
     userdel -r "$builder" >/dev/null 2>&1 || true
     useradd -m -s /bin/bash "$builder"
@@ -528,33 +654,187 @@ install_aur_package_temp_builder() {
     chmod 0440 /etc/sudoers.d/99-fedoraarch-build
 
     local rc=0
-    su - "$builder" -c "git clone '$url' ~/pkg && cd ~/pkg && makepkg -si --needed" || rc=$?
+    su - "$builder" -c "git clone '$url' ~/pkg && cd ~/pkg && makepkg -si --needed --noconfirm" || rc=$?
 
     rm -f /etc/sudoers.d/99-fedoraarch-build
     userdel -r "$builder" >/dev/null 2>&1 || true
     (( rc == 0 )) || fatal "Failed to build/install $pkg from AUR."
 }
 
+configure_plasma_oobe_admin() {
+    info "Configuring administrator access for the account created by Plasma Setup"
+
+    pacman_install sudo
+    getent group wheel >/dev/null || groupadd wheel
+
+    install -d -m0750 /etc/sudoers.d
+    printf '%s\n' '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/10-wheel
+    chmod 0440 /etc/sudoers.d/10-wheel
+    visudo -cf /etc/sudoers.d/10-wheel >/dev/null \
+        || fatal "Generated wheel sudoers rule failed visudo validation."
+
+    install -d -m0755 /usr/local/libexec /var/lib/fedora-arch
+    cat > /usr/local/libexec/fedora-arch-plasma-admin <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Do nothing until Plasma Setup reports that OOBE completed successfully.
+[[ -e /etc/plasma-setup-done ]] || exit 0
+
+uid_min=$(awk '$1 == "UID_MIN" { print $2; exit }' /etc/login.defs 2>/dev/null || true)
+uid_min=${uid_min:-1000}
+
+changed=0
+while IFS=: read -r name _ uid _ _ home shell; do
+    [[ $uid =~ ^[0-9]+$ ]] || continue
+    (( uid >= uid_min && uid < 65534 )) || continue
+    case "$shell" in
+        */nologin|*/false) continue ;;
+    esac
+
+    /usr/bin/usermod -aG wheel "$name"
+    if [[ -e /etc/fedora-arch-use-fish && -x /usr/bin/fish ]]; then
+        /usr/bin/usermod -s /usr/bin/fish "$name"
+    fi
+
+    # Pastelitto: Dolphin always opens this user's home directory instead of
+    # restoring the folders/tabs/window state from the previous session.
+    if [[ -e /etc/fedora-arch-pastelitto && -d "$home" && -x /usr/bin/kwriteconfig6 ]]; then
+        /usr/bin/runuser -u "$name" -- env HOME="$home" \
+            /usr/bin/kwriteconfig6 --file dolphinrc --group General --key RememberOpenedTabs false
+        /usr/bin/runuser -u "$name" -- env HOME="$home" \
+            /usr/bin/kwriteconfig6 --file dolphinrc --group General --key HomeUrl "file://$home"
+    fi
+    changed=1
+done < /etc/passwd
+
+if (( changed )); then
+    touch /var/lib/fedora-arch/oobe-admin-done
+fi
+EOF
+    chmod 0755 /usr/local/libexec/fedora-arch-plasma-admin
+
+    # Primary hook: run immediately when plasma-setup exits.
+    install -d -m0755 /etc/systemd/system/plasma-setup.service.d
+    cat > /etc/systemd/system/plasma-setup.service.d/20-admin-user.conf <<'EOF'
+[Service]
+ExecStopPost=/usr/local/libexec/fedora-arch-plasma-admin
+EOF
+
+    # Fallback: some plasma-setup builds/service types do not give us a useful
+    # ExecStopPost transition after account creation.  Watch its completion
+    # marker and run the same idempotent helper as soon as it appears.
+    cat > /etc/systemd/system/fedora-arch-oobe-admin.service <<'EOF'
+[Unit]
+Description=Finish first Plasma OOBE administrator setup
+ConditionPathExists=/etc/plasma-setup-done
+ConditionPathExists=!/var/lib/fedora-arch/oobe-admin-done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/fedora-arch-plasma-admin
+EOF
+
+    cat > /etc/systemd/system/fedora-arch-oobe-admin.path <<'EOF'
+[Unit]
+Description=Watch for Plasma Setup completion
+
+[Path]
+PathExists=/etc/plasma-setup-done
+Unit=fedora-arch-oobe-admin.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable fedora-arch-oobe-admin.path >/dev/null 2>&1 || true
+
+    # Repairs an already-completed Plasma Setup when this installer is rerun.
+    if [[ -e /etc/plasma-setup-done ]]; then
+        /usr/local/libexec/fedora-arch-plasma-admin
+    fi
+}
+
 install_plasma_oobe() {
     info "Installing KDE Plasma Setup first-boot OOBE"
+    local oobe_pkg="" oobe_repo=""
     if pacman -Si plasma-setup >/dev/null 2>&1; then
-        pacman -S --needed plasma-setup
+        oobe_pkg=plasma-setup
     elif pacman -Si plasma-setup-git >/dev/null 2>&1; then
-        pacman -S --needed plasma-setup-git
+        oobe_pkg=plasma-setup-git
+    fi
+
+    if [[ -n "$oobe_pkg" ]]; then
+        oobe_repo="$(pacman -Si "$oobe_pkg" 2>/dev/null | awk -F: '/^Repository[[:space:]]*:/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}')"
+        info "Using precompiled $oobe_pkg from ${oobe_repo:-an enabled binary repository}"
+        pacman_install "$oobe_pkg"
     else
+        warn "No precompiled plasma-setup package was found in the enabled repos; building plasma-setup-git from AUR."
         install_aur_package_temp_builder plasma-setup-git
     fi
-    systemctl enable plasma-setup.service
+    configure_plasma_oobe_admin
+    if [[ -e /etc/plasma-setup-done ]]; then
+        warn "Plasma Setup has already completed; preserving /etc/plasma-setup-done."
+    else
+        systemctl enable plasma-setup.service
+    fi
+}
+
+configure_fish_default() {
+    if (( INSTALL_FISH )); then
+        info "Installing Fish and making it the default shell for the first user"
+        pacman_install fish
+        touch /etc/fedora-arch-use-fish
+
+        if [[ -f /etc/default/useradd ]]; then
+            if grep -q '^SHELL=' /etc/default/useradd; then
+                sed -i 's#^SHELL=.*#SHELL=/usr/bin/fish#' /etc/default/useradd
+            else
+                echo 'SHELL=/usr/bin/fish' >> /etc/default/useradd
+            fi
+        else
+            printf '%s\n' 'SHELL=/usr/bin/fish' > /etc/default/useradd
+        fi
+    else
+        rm -f /etc/fedora-arch-use-fish
+    fi
 }
 
 install_kernel_and_boot_core() {
     info "Installing kernel + chosen initramfs provider"
     local provider="$INITRAMFS"
-    pacman -S --needed "$provider" linux linux-headers linux-firmware sudo git networkmanager plymouth
+    local -a fs_pkgs=()
+    local fs mp
+    for mp in / /boot /home /efi; do
+        mountpoint -q "$mp" || continue
+        fs="$(findmnt -n -o FSTYPE "$mp" 2>/dev/null || true)"
+        case "$fs" in
+            f2fs) fs_pkgs+=(f2fs-tools) ;;
+            ext4|ext3|ext2) fs_pkgs+=(e2fsprogs) ;;
+            btrfs) fs_pkgs+=(btrfs-progs) ;;
+            xfs) fs_pkgs+=(xfsprogs) ;;
+        esac
+    done
+    mapfile -t fs_pkgs < <(printf '%s\n' "${fs_pkgs[@]:-}" | sed '/^$/d' | sort -u)
 
+    local -a core_pkgs=("$provider" linux linux-headers linux-firmware sudo git networkmanager plymouth)
+    local root_src root_type
+    root_src="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+    root_type="$(lsblk -ndo TYPE "$root_src" 2>/dev/null || true)"
+    [[ "$root_src" == /dev/md* || "$root_type" == raid* ]] && core_pkgs+=(mdadm)
+    pacman_install "${core_pkgs[@]}" "${fs_pkgs[@]}"
+
+    # Pastelitto preset deliberately does not install OS-provided Intel microcode.
+    # Firmware/UEFI may still apply its own CPU microcode before Linux starts.
     case "$(lscpu | awk -F: '/Vendor ID/ {gsub(/^[ \t]+/,"",$2); print $2}')" in
-        GenuineIntel) pacman -S --needed intel-ucode ;;
-        AuthenticAMD) pacman -S --needed amd-ucode ;;
+        GenuineIntel)
+            if pacman -Q intel-ucode >/dev/null 2>&1; then
+                pacman_remove intel-ucode || warn "Could not remove intel-ucode; remove it manually if you want no Arch Intel microcode image."
+            fi
+            rm -f /boot/intel-ucode.img
+            ;;
+        AuthenticAMD) pacman_install amd-ucode ;;
     esac
 }
 
@@ -563,37 +843,62 @@ install_kde() {
     local -a plasma_pkgs=() desktop_pkgs=(
         plasma-login-manager
         networkmanager plasma-nm
-        pipewire pipewire-alsa pipewire-pulse wireplumber
         xdg-desktop-portal-kde
-        breeze breeze-icons noto-fonts noto-fonts-emoji
-        packagekit packagekit-qt6 flatpak
+        breeze breeze-icons
+        noto-fonts noto-fonts-cjk noto-fonts-emoji noto-fonts-extra
+        flatpak
         appstream appstream-qt archlinux-appstream-data
         polkit-kde-agent
     )
 
-    # The Arch plasma group includes plasma-bigscreen. This desktop build does
-    # not use the TV/big-screen shell/input handler, so expand the group and
-    # deliberately exclude that package.
-    mapfile -t plasma_pkgs < <(pacman -Sgq plasma | sort -u | grep -vx 'plasma-bigscreen')
+    # Force the PipeWire JACK implementation before installing the Plasma group
+    # so an unattended provider choice never selects jack2.
+    pacman_install \
+        pipewire pipewire-audio pipewire-alsa pipewire-pulse wireplumber \
+        pipewire-jack lib32-pipewire-jack
+
+    if (( ENABLE_DISCOVER_SYSTEM )); then
+        desktop_pkgs+=(packagekit packagekit-qt6 bubblewrap)
+    fi
+
+    # The Arch plasma group also contains optional/legacy pieces we do not want.
+    mapfile -t plasma_pkgs < <(
+        pacman -Sgq plasma | sort -u | grep -Ev '^(plasma-bigscreen|sddm-kcm|sddm)$'
+    )
     ((${#plasma_pkgs[@]})) || fatal "Could not resolve the Arch plasma package group."
 
     (( KEEP_BLUETOOTH )) && desktop_pkgs+=(bluez bluez-utils)
     (( KEEP_CUPS )) && desktop_pkgs+=(cups)
-    pacman -S --needed "${plasma_pkgs[@]}" "${desktop_pkgs[@]}"
+    pacman_install "${plasma_pkgs[@]}" "${desktop_pkgs[@]}"
 
     # Clean up installs made by older revisions of this project.
     if pacman -Q plasma-bigscreen >/dev/null 2>&1; then
         info "Removing plasma-bigscreen (not used by this desktop profile)"
-        pacman -Rns plasma-bigscreen
+        pacman_remove plasma-bigscreen
+    fi
+
+    systemctl disable sddm.service 2>/dev/null || true
+    local -a old_sddm_pkgs=()
+    pacman -Q sddm-kcm >/dev/null 2>&1 && old_sddm_pkgs+=(sddm-kcm)
+    pacman -Q sddm >/dev/null 2>&1 && old_sddm_pkgs+=(sddm)
+    if ((${#old_sddm_pkgs[@]})); then
+        info "Removing legacy SDDM packages: ${old_sddm_pkgs[*]}"
+        pacman_remove "${old_sddm_pkgs[@]}"
+    fi
+    if ! pacman -Q sddm >/dev/null 2>&1 && id sddm >/dev/null 2>&1; then
+        userdel -r sddm 2>/dev/null || userdel sddm 2>/dev/null || true
     fi
 
     # User-requested minimal KDE application set.
-    # Arch's kate package also provides the KWrite executable/desktop entry.
-    pacman -S --needed \
+    pacman_install \
         dolphin konsole kate discover gwenview libreoffice-fresh \
         plasma-systemmonitor ark kcalc spectacle elisa
 
     if [[ $FEDORA_DEFAULT_APPS -eq 1 ]]; then
+        # Preselect useful OCR providers so pacman never auto-picks the first
+        # alphabetical tessdata provider (e.g. Afrikaans) in unattended mode.
+        install_available_auto "Installing OCR language providers" tesseract-data-eng tesseract-data-spa
+
         local fedora_kde_apps=(
             akonadi-import-wizard akregator
             dragon filelight firefox firewall-config gimp grantlee-editor
@@ -606,7 +911,7 @@ install_kde() {
             localsend osu-lazer scx-manager
             drkonqi
         )
-        install_available_interactive "Installing filtered Fedora KDE application bundle" "${fedora_kde_apps[@]}"
+        install_available_auto "Installing filtered Fedora KDE application bundle" "${fedora_kde_apps[@]}"
     fi
 
     install_plasma_oobe
@@ -618,21 +923,22 @@ install_gnome() {
     local desktop_pkgs=(
         gnome gdm gnome-software gnome-initial-setup
         networkmanager
-        pipewire pipewire-alsa pipewire-pulse wireplumber
+        pipewire pipewire-audio pipewire-alsa pipewire-pulse wireplumber
+        pipewire-jack lib32-pipewire-jack
         xdg-desktop-portal-gnome
         packagekit flatpak
-        noto-fonts noto-fonts-emoji
+        noto-fonts noto-fonts-cjk noto-fonts-emoji noto-fonts-extra
     )
     (( KEEP_BLUETOOTH )) && desktop_pkgs+=(bluez bluez-utils)
     (( KEEP_CUPS )) && desktop_pkgs+=(cups)
-    pacman -S --needed "${desktop_pkgs[@]}"
+    pacman_install "${desktop_pkgs[@]}"
 
     if [[ $FEDORA_DEFAULT_APPS -eq 1 ]]; then
         local fedora_generic_apps=(
             firefox firewall-config gimp libreoffice-fresh mediawriter obs-studio
             localsend osu-lazer scx-manager
         )
-        install_available_interactive "Installing captured Fedora desktop-neutral apps" "${fedora_generic_apps[@]}"
+        install_available_auto "Installing captured Fedora desktop-neutral apps" "${fedora_generic_apps[@]}"
     fi
 
     systemctl enable gdm.service
@@ -650,7 +956,7 @@ install_nvidia_580() {
         nvidia-580xx-dkms nvidia-580xx-utils
         lib32-nvidia-580xx-utils opencl-nvidia-580xx lib32-opencl-nvidia-580xx
     )
-    install_available_interactive "NVIDIA 580xx packages" "${pkgs[@]}"
+    install_available_auto "NVIDIA 580xx packages" "${pkgs[@]}"
 }
 
 configure_services() {
@@ -694,7 +1000,7 @@ configure_services() {
     # offline transaction. On this setup it can otherwise start before DNS is
     # usable and falsely mark an already-applied update as failed. Wait for an
     # actually connected NetworkManager connection only for this service.
-    if systemctl cat packagekit-offline-update.service >/dev/null 2>&1; then
+    if (( ENABLE_DISCOVER_SYSTEM )) && systemctl cat packagekit-offline-update.service >/dev/null 2>&1; then
         install -d /etc/systemd/system/packagekit-offline-update.service.d
         cat > /etc/systemd/system/packagekit-offline-update.service.d/10-network-online.conf <<'EOF_PK_OFFLINE'
 [Unit]
@@ -739,7 +1045,7 @@ install_wallpapers_and_branding() {
 
 install_fedora_kde_assets() {
     [[ "$DESKTOP" == kde ]] || return 0
-    info "Installing captured Fedora KDE appearance/configuration"
+    info "Installing Fedora KDE system appearance assets"
 
     if compgen -G "$FEDORA_LOOKANDFEEL_ASSET_DIR/org.fedoraproject.*" >/dev/null; then
         mkdir -p /usr/share/plasma/look-and-feel
@@ -756,14 +1062,21 @@ install_fedora_kde_assets() {
         cp -a "$FEDORA_CONFIG_ASSET_DIR/xdg/plasma-workspace" /etc/xdg/
     fi
 
-    if [[ -f "$FEDORA_CONFIG_ASSET_DIR/discover/discoverrc" ]]; then
-        install -Dm0644 "$FEDORA_CONFIG_ASSET_DIR/discover/discoverrc" /etc/xdg/discoverrc
-    else
-        install -d /etc/xdg
-        cat > /etc/xdg/discoverrc <<'EOF_DISCOVER'
+    install -d /etc/xdg
+    if (( ENABLE_DISCOVER_SYSTEM )); then
+        if [[ -f "$FEDORA_CONFIG_ASSET_DIR/discover/discoverrc" ]]; then
+            install -Dm0644 "$FEDORA_CONFIG_ASSET_DIR/discover/discoverrc" /etc/xdg/discoverrc
+        else
+            cat > /etc/xdg/discoverrc <<'EOF'
 [Software]
 UseOfflineUpdates=true
-EOF_DISCOVER
+EOF
+        fi
+    else
+        cat > /etc/xdg/discoverrc <<'EOF'
+[Software]
+UseOfflineUpdates=false
+EOF
     fi
 
     if [[ -f "$FEDORA_CONFIG_ASSET_DIR/plasmalogin/defaults.conf" ]]; then
@@ -772,16 +1085,149 @@ EOF_DISCOVER
             /etc/plasmalogin.conf.d/10-fedora.conf
     fi
 
-    # No regular user exists yet. Seed /etc/skel so the account created by
-    # Plasma Setup receives the captured Fedora Plasma configuration.
-    mkdir -p /etc/skel/.config
-    if [[ -d "$FEDORA_USER_CONFIG_ASSET_DIR" ]]; then
-        local f
-        for f in kdeglobals kwinrc kcminputrc plasmarc ksplashrc kscreenlockerrc kglobalshortcutsrc plasma-org.kde.plasma.desktop-appletsrc; do
-            [[ -f "$FEDORA_USER_CONFIG_ASSET_DIR/$f" ]] && \
-                cp -a "$FEDORA_USER_CONFIG_ASSET_DIR/$f" "/etc/skel/.config/$f"
+    # assets/fedora-user-config contains Pastelitto's customized KDE state, not
+    # pristine Fedora defaults. Seed it only when the user explicitly opts in.
+    install -d /etc/skel/.config /etc/skel/.local/share/konsole
+    local -a pastelitto_files=(
+        kdeglobals kwinrc kcminputrc plasmarc ksplashrc kscreenlockerrc
+        kglobalshortcutsrc plasma-org.kde.plasma.desktop-appletsrc
+    )
+    local f
+    if (( APPLY_PASTELITTO_KDE )); then
+        info "Applying KDE style Pastelitto to /etc/skel"
+        touch /etc/fedora-arch-pastelitto
+        if [[ -d "$FEDORA_USER_CONFIG_ASSET_DIR" ]]; then
+            for f in "${pastelitto_files[@]}"; do
+                [[ -f "$FEDORA_USER_CONFIG_ASSET_DIR/$f" ]] && \
+                    cp -a "$FEDORA_USER_CONFIG_ASSET_DIR/$f" "/etc/skel/.config/$f"
+            done
+        fi
+
+        # Pastelitto application-font preferences.
+        # Konsole stores its terminal font in a profile, not in konsolerc.
+        cat > /etc/skel/.local/share/konsole/Pastelitto.profile <<'EOF_KONSOLE_PROFILE'
+[General]
+Name=Pastelitto
+Parent=FALLBACK/
+
+[Appearance]
+Font=Monospace,11,-1,5,50,0,0,0,0,0
+EOF_KONSOLE_PROFILE
+        cat > /etc/skel/.config/konsolerc <<'EOF_KONSOLERC'
+[Desktop Entry]
+DefaultProfile=Pastelitto.profile
+EOF_KONSOLERC
+
+        # Dolphin: fixed startup folder mode. HomeUrl is written with the real
+        # username/home path by the Plasma OOBE helper after account creation.
+        cat > /etc/skel/.config/dolphinrc <<'EOF_DOLPHINRC'
+[General]
+RememberOpenedTabs=false
+EOF_DOLPHINRC
+
+        # Kate and KWrite share the KTextEditor schema. Weight 50 is Regular;
+        # omit a hard-coded styleName so syntax highlighting may still request
+        # bold/italic variants where appropriate.
+        cat > /etc/skel/.config/kateschemarc <<'EOF_KATESCHEMA'
+[kate - Normal]
+Font=Noto Sans,11,-1,5,50,0,0,0,0,0
+
+[kwrite - Normal]
+Font=Noto Sans,11,-1,5,50,0,0,0,0,0
+
+[Normal]
+Font=Noto Sans,11,-1,5,50,0,0,0,0,0
+EOF_KATESCHEMA
+    else
+        info "Leaving KDE user theme/config unseeded so Plasma Setup can apply its selected theme"
+        for f in "${pastelitto_files[@]}"; do
+            rm -f "/etc/skel/.config/$f"
         done
+        rm -f /etc/fedora-arch-pastelitto
+        rm -f /etc/skel/.config/konsolerc /etc/skel/.config/kateschemarc /etc/skel/.config/dolphinrc
+        rm -f /etc/skel/.local/share/konsole/Pastelitto.profile
     fi
+}
+
+configure_discover_system_management() {
+    [[ "$DESKTOP" == kde ]] || return 0
+    (( ENABLE_DISCOVER_SYSTEM )) || return 0
+
+    info "Configuring Discover for native packages/offline updates without password prompts"
+    pacman_install packagekit packagekit-qt6 bubblewrap appstream appstream-qt archlinux-appstream-data
+
+    # PackageKit operations launched by an active local administrator in wheel
+    # are allowed without an authentication dialog. Untrusted package/key trust
+    # operations are deliberately NOT included.
+    install -d -m0755 /etc/polkit-1/rules.d
+    cat > /etc/polkit-1/rules.d/10-discover-wheel-nopasswd.rules <<'EOF'
+polkit.addRule(function(action, subject) {
+    if (!(subject.active == true && subject.local == true && subject.isInGroup("wheel"))) {
+        return;
+    }
+
+    var packagekit = [
+        "org.freedesktop.packagekit.package-install",
+        "org.freedesktop.packagekit.package-reinstall",
+        "org.freedesktop.packagekit.package-downgrade",
+        "org.freedesktop.packagekit.package-remove",
+        "org.freedesktop.packagekit.system-update",
+        "org.freedesktop.packagekit.system-sources-refresh",
+        "org.freedesktop.packagekit.system-sources-configure",
+        "org.freedesktop.packagekit.trigger-offline-update",
+        "org.freedesktop.packagekit.clear-offline-update",
+        "org.freedesktop.packagekit.repair-system"
+    ];
+
+    var flatpak = [
+        "org.freedesktop.Flatpak.app-install",
+        "org.freedesktop.Flatpak.runtime-install",
+        "org.freedesktop.Flatpak.app-uninstall",
+        "org.freedesktop.Flatpak.runtime-uninstall",
+        "org.freedesktop.Flatpak.modify-repo"
+    ];
+
+    if (packagekit.indexOf(action.id) !== -1 || flatpak.indexOf(action.id) !== -1) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+    chmod 0644 /etc/polkit-1/rules.d/10-discover-wheel-nopasswd.rules
+
+    # Discover deliberately shows an Arch+PackageKit warning. Give only the
+    # Discover process a non-Arch os-release view; PackageKit remains outside
+    # the namespace and continues to see/use the real Arch pacman repositories.
+    install -d -m0755 /usr/local/share/fedora-arch /usr/local/share/applications /usr/local/bin
+    cp /etc/os-release /usr/local/share/fedora-arch/discover-os-release
+    sed -i \
+        -e 's/^ID=.*/ID=genericlinux/' \
+        -e 's/^ID_LIKE=.*/ID_LIKE=linux/' \
+        /usr/local/share/fedora-arch/discover-os-release
+    grep -q '^ID_LIKE=' /usr/local/share/fedora-arch/discover-os-release || \
+        echo 'ID_LIKE=linux' >> /usr/local/share/fedora-arch/discover-os-release
+
+    cat > /usr/local/bin/plasma-discover <<'EOF'
+#!/usr/bin/env bash
+set -e
+FAKE=/usr/local/share/fedora-arch/discover-os-release
+REAL_OS_RELEASE="$(readlink -f /etc/os-release)"
+exec /usr/bin/bwrap \
+    --dev-bind / / \
+    --ro-bind "$FAKE" "$REAL_OS_RELEASE" \
+    /usr/bin/plasma-discover "$@"
+EOF
+    chmod 0755 /usr/local/bin/plasma-discover
+
+    if [[ -f /usr/share/applications/org.kde.discover.desktop ]]; then
+        cp /usr/share/applications/org.kde.discover.desktop \
+           /usr/local/share/applications/org.kde.discover.desktop
+        sed -i -E \
+            's#^Exec=(/usr/bin/)?plasma-discover#Exec=/usr/local/bin/plasma-discover#' \
+            /usr/local/share/applications/org.kde.discover.desktop
+    fi
+
+    # Remove the older wrapper name if a previous revision created it.
+    rm -f /usr/local/bin/plasma-discover-fedora
 }
 
 # -----------------------------------------------------------------------------
@@ -811,10 +1257,11 @@ configure_kernel_tuning_args() {
     add_kernel_arg splash
     add_kernel_arg vt.global_cursor_default=0
 
-    # Disk swap is backed by an aggressive-but-bounded zswap cache. No zram.
+    # User chose disk swap + zswap, not zram. Match CachyOS's current zswap
+    # guidance (LZ4, 30% pool, shrinker) and retain our 80% re-accept threshold.
+    add_kernel_arg systemd.zram=0
     add_kernel_arg zswap.enabled=1
-    add_kernel_arg zswap.compressor=zstd
-    add_kernel_arg zswap.zpool=zsmalloc
+    add_kernel_arg zswap.compressor=lz4
     add_kernel_arg zswap.max_pool_percent=30
     add_kernel_arg zswap.accept_threshold_percent=80
     add_kernel_arg zswap.shrinker_enabled=1
@@ -834,16 +1281,13 @@ configure_kernel_tuning_args() {
         add_kernel_arg loglevel=3
     fi
 
-    # Ivy Bridge and newer Intel systems can use intel_pstate.  This only
-    # selects the scaling driver; there is NO kernel/GRUB option that forces
-    # Turbo Boost on. Turbo is enabled at runtime by ~/performance.sh via
-    # intel_pstate/no_turbo=0 and x86_energy_perf_policy --turbo-enable 1.
+    # intel_pstate=active chooses the driver; Turbo is enabled manually by the
+    # user's ~/performance.sh so no custom boot performance service is created.
     if (( PERF_CPU )) && grep -qm1 'vendor_id.*GenuineIntel' /proc/cpuinfo; then
         add_kernel_arg intel_pstate=active
     fi
 
     if (( DISABLE_MITIGATIONS )); then
-        # Exact mitigation-related set currently used on the user's Fedora box.
         local a
         for a in \
             noibrs noibpb nopti nospectre_v1 nospectre_v2 spectre_v2=off \
@@ -857,8 +1301,6 @@ configure_kernel_tuning_args() {
     (( DISABLE_WATCHDOG )) && add_kernel_arg nowatchdog
     (( DISABLE_PSTORE )) && add_kernel_arg efi_pstore.pstore_disable=1
 
-    # These module blacklists work with every initramfs choice; the rd.* command
-    # line form above additionally handles dracut early userspace.
     install -d /etc/modprobe.d
     cat > /etc/modprobe.d/blacklist-nouveau-nova.conf <<'EOF_BLACKLIST_GPU'
 blacklist nouveau
@@ -869,7 +1311,10 @@ EOF_BLACKLIST_GPU
         cat > /etc/modprobe.d/blacklist-intel-watchdog.conf <<'EOF_BLACKLIST_WDT'
 blacklist iTCO_wdt
 blacklist iTCO_vendor_support
+blacklist sp5100_tco
 EOF_BLACKLIST_WDT
+    else
+        rm -f /etc/modprobe.d/blacklist-intel-watchdog.conf
     fi
 }
 
@@ -877,7 +1322,13 @@ configure_logging() {
     install -d /etc/systemd/journald.conf.d
     case "$LOGGING_PROFILE" in
         1)
-            rm -f /etc/systemd/journald.conf.d/99-fedora-arch-debloat.conf
+            # CachyOS caps the journal at 50 MiB. Keep normal persistent/auto
+            # journaling semantics but prevent unbounded log growth.
+            cat > /etc/systemd/journald.conf.d/99-fedora-arch-debloat.conf <<'EOF_JOURNAL'
+[Journal]
+SystemMaxUse=50M
+RuntimeMaxUse=50M
+EOF_JOURNAL
             ;;
         2)
             cat > /etc/systemd/journald.conf.d/99-fedora-arch-debloat.conf <<'EOF_JOURNAL'
@@ -895,9 +1346,6 @@ RuntimeMaxUse=8M
 MaxLevelStore=warning
 MaxLevelSyslog=warning
 ForwardToSyslog=no
-ForwardToKMsg=no
-ForwardToConsole=no
-ForwardToWall=no
 EOF_JOURNAL
             ;;
         4)
@@ -913,21 +1361,18 @@ ForwardToWall=no
 EOF_JOURNAL
             ;;
     esac
+}
 
-    if (( DISABLE_SYSLOG )); then
-        local unit
-        for unit in rsyslog.service syslog-ng.service syslog-ng@default.service; do
-            systemctl mask "$unit" >/dev/null 2>&1 || true
-        done
-    fi
-
-    if (( DISABLE_AUDIT )); then
-        systemctl mask auditd.service >/dev/null 2>&1 || true
-    fi
-
-    if (( DISABLE_PSTORE )); then
-        systemctl mask systemd-pstore.service >/dev/null 2>&1 || true
-    fi
+configure_syslog() {
+    (( DISABLE_SYSLOG )) || return 0
+    info "Disabling traditional syslog daemons"
+    local svc
+    for svc in rsyslog.service syslog-ng.service; do
+        if systemctl cat "$svc" >/dev/null 2>&1; then
+            systemctl disable --now "$svc" >/dev/null 2>&1 || true
+            systemctl mask "$svc" >/dev/null 2>&1 || true
+        fi
+    done
 }
 
 configure_coredumps() {
@@ -962,7 +1407,7 @@ configure_cpu_performance() {
     # The script also uses the kernel's intel_pstate sysfs control, so it still
     # works if this helper is unavailable for any reason.
     if grep -qm1 'vendor_id.*GenuineIntel' /proc/cpuinfo; then
-        pacman -S --needed x86_energy_perf_policy
+        pacman_install x86_energy_perf_policy
     fi
 
     install -d /etc/skel
@@ -1026,29 +1471,79 @@ EOF_PERFORMANCE_SCRIPT
 
 configure_io_performance() {
     (( PERF_IO )) || return 0
-    info "Installing ArchWiki-style I/O scheduler rules"
-    install -d /etc/udev/rules.d
+    info "Installing CachyOS-style adaptive I/O scheduler + storage rules"
+    pacman_install hdparm
+    install -d /usr/local/libexec /etc/udev/rules.d
+
+    # CachyOS currently uses BFQ for HDD, mq-deadline for SATA/eMMC SSD, and
+    # (since 26.04) Kyber for NVMe. Validate against each device's advertised
+    # scheduler list so unsupported choices can never create udev errors.
+    cat > /usr/local/libexec/fedora-arch-iosched <<'EOF_IOSCHED_HELPER'
+#!/usr/bin/env bash
+set -u
+name="${1:-}"
+[[ -n "$name" && -e "/sys/block/$name/queue/scheduler" ]] || exit 0
+sched="/sys/block/$name/queue/scheduler"
+rot="$(cat "/sys/block/$name/queue/rotational" 2>/dev/null || echo 0)"
+avail="$(cat "$sched" 2>/dev/null || true)"
+
+pick=""
+if [[ "$name" == nvme* ]]; then
+    grep -qw kyber <<<"$avail" && pick=kyber
+    [[ -n "$pick" ]] || { grep -qw none <<<"$avail" && pick=none; }
+elif [[ "$rot" == 1 ]]; then
+    grep -qw bfq <<<"$avail" && pick=bfq
+    [[ -n "$pick" ]] || { grep -qw mq-deadline <<<"$avail" && pick=mq-deadline; }
+else
+    grep -qw mq-deadline <<<"$avail" && pick=mq-deadline
+    [[ -n "$pick" ]] || { grep -qw none <<<"$avail" && pick=none; }
+fi
+[[ -n "$pick" ]] && printf '%s\n' "$pick" > "$sched" 2>/dev/null || true
+
+# CachyOS keeps rotational ATA disks awake / at high APM performance.
+if [[ "$rot" == 1 && "$name" == sd* && -b "/dev/$name" ]] && command -v hdparm >/dev/null 2>&1; then
+    hdparm -B 254 -S 0 "/dev/$name" >/dev/null 2>&1 || true
+fi
+EOF_IOSCHED_HELPER
+    chmod 0755 /usr/local/libexec/fedora-arch-iosched
+
     cat > /etc/udev/rules.d/60-ioschedulers.rules <<'EOF_IOSCHED'
-# ArchWiki Improving performance example.
-# Rotational HDD
-ACTION=="add|change", KERNEL=="sd[a-z]*", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"
-# SATA/SAS SSD and eMMC
-ACTION=="add|change", KERNEL=="sd[a-z]*|mmcblk[0-9]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="bfq"
-# NVMe
-ACTION=="add|change", KERNEL=="nvme[0-9]*", ENV{DEVTYPE}=="disk", ATTR{queue/scheduler}="none"
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", RUN+="/usr/local/libexec/fedora-arch-iosched %k"
 EOF_IOSCHED
+
+    # SATA link power management: CachyOS chooses max_performance for desktop
+    # responsiveness. Assignment only occurs if the kernel exposes the attr.
+    cat > /etc/udev/rules.d/61-sata-lpm-performance.rules <<'EOF_SATA_LPM'
+ACTION=="add|change", SUBSYSTEM=="scsi_host", KERNEL=="host*", TEST=="link_power_management_policy", ATTR{link_power_management_policy}="max_performance"
+EOF_SATA_LPM
+
+    # CachyOS-style low-latency device permission; harmless when absent.
+    cat > /etc/udev/rules.d/62-cpu-dma-latency.rules <<'EOF_DMA_LATENCY'
+KERNEL=="cpu_dma_latency", GROUP="audio", MODE="0660"
+EOF_DMA_LATENCY
+
+    # CachyOS also grants the audio group access to the high-resolution timer
+    # devices used by some low-latency audio/game workloads.
+    cat > /etc/udev/rules.d/63-hpet-rtc-audio.rules <<'EOF_HPET_RTC'
+KERNEL=="rtc0", GROUP="audio", MODE="0660"
+KERNEL=="hpet", GROUP="audio", MODE="0660"
+EOF_HPET_RTC
+
     systemctl enable fstrim.timer >/dev/null 2>&1 || true
 }
 
 configure_zswap() {
-    info "Configuring zswap over disk swap (zram disabled)"
-    install -d /etc/sysctl.d
+    info "Configuring CachyOS-style zswap over disk swap (zram disabled)"
+    install -d /etc/sysctl.d /etc/udev/rules.d
     rm -f /etc/systemd/zram-generator.conf
     rm -f /etc/systemd/zram-generator.conf.d/99-fedora-arch.conf 2>/dev/null || true
 
+    # CachyOS's zswap migration guide disables its zram rule with an empty local
+    # override. This also protects us if a zram package is pulled in later.
+    : > /etc/udev/rules.d/30-zram.rules
+
     cat > /etc/sysctl.d/98-fedora-arch-zswap.conf <<'EOF_ZSWAP_SYSCTL'
-# zswap keeps hot swap pages compressed in RAM and evicts colder pages to the
-# real swap partition. More aggressive than the kernel defaults, but bounded.
+# Disk swap + zswap. Kernel command line selects LZ4 and a 30% zswap pool.
 vm.swappiness = 100
 vm.page-cluster = 0
 EOF_ZSWAP_SYSCTL
@@ -1056,14 +1551,49 @@ EOF_ZSWAP_SYSCTL
 
 configure_vm_sysctl() {
     (( PERF_SYSCTL )) || return 0
-    info "Installing sysctl.d desktop-performance tuning for 16 GiB RAM"
+
+    local ram_kib ram_bytes dirty_bytes bg_bytes cpus min_dirty max_dirty
+    ram_kib="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)"
+    ram_bytes=$(( ram_kib * 1024 ))
+    cpus="$(nproc)"
+    min_dirty=$((64 * 1024 * 1024))
+    max_dirty=$((512 * 1024 * 1024))
+
+    # Adaptive extension of CachyOS's 256/64 MiB defaults: use ~1/64 of RAM,
+    # clamped to 64..512 MiB, and background flushing at one quarter of that.
+    # On the user's 16 GiB system this is exactly CachyOS's 256 MiB / 64 MiB.
+    dirty_bytes=$(( ram_bytes / 64 ))
+    (( dirty_bytes < min_dirty )) && dirty_bytes=$min_dirty
+    (( dirty_bytes > max_dirty )) && dirty_bytes=$max_dirty
+    bg_bytes=$(( dirty_bytes / 4 ))
+
+    info "Installing CachyOS-derived sysctl tuning (${cpus} CPU threads, $((ram_bytes/1024/1024/1024)) GiB RAM)"
     install -d /etc/sysctl.d
-    cat > /etc/sysctl.d/99-fedora-arch-performance.conf <<'EOF_SYSCTL'
-# ArchWiki-inspired desktop tuning. 16 GiB RAM target.
+    cat > /etc/sysctl.d/99-fedora-arch-performance.conf <<EOF_SYSCTL
+# CachyOS-derived desktop tuning + RAM-sized dirty-write thresholds.
+vm.swappiness = 100
 vm.vfs_cache_pressure = 50
-vm.dirty_ratio = 3
-vm.dirty_background_ratio = 1
+vm.dirty_bytes = $dirty_bytes
+vm.dirty_background_bytes = $bg_bytes
+vm.dirty_writeback_centisecs = 1500
+vm.page-cluster = 0
+kernel.unprivileged_userns_clone = 1
+kernel.printk = 3 3 3 3
+kernel.kptr_restrict = 2
+net.core.netdev_max_backlog = 4096
+fs.file-max = 2097152
+fs.inotify.max_user_instances = 1024
+fs.inotify.max_user_watches = 524288
+kernel.sysrq = 1
 EOF_SYSCTL
+    (( DISABLE_WATCHDOG )) && echo 'kernel.nmi_watchdog = 0' >> /etc/sysctl.d/99-fedora-arch-performance.conf
+
+    # CachyOS explicitly warns that its game-performance profile often hurts
+    # older / <6c12t CPUs. We therefore keep the user's manual performance.sh
+    # instead of enabling a background scheduler/performance service.
+    if (( cpus < 12 )); then
+        info "CPU has $cpus threads: skipping CachyOS game-performance/scx automation; manual performance.sh remains opt-in."
+    fi
 }
 
 f2fs_root_has_compression() {
@@ -1078,48 +1608,109 @@ f2fs_root_has_compression() {
 configure_f2fs_fstab() {
     (( OPTIMIZE_F2FS )) || return 0
     if ! awk '$1 !~ /^#/ && $3 == "f2fs" {found=1} END{exit !found}' /etc/fstab; then
-        warn "F2FS optimization requested, but /etc/fstab currently has no F2FS entries. Skipping."
+        warn "F2FS optimization requested, but /etc/fstab has no F2FS entries. New format.sh writes verified F2FS entries automatically; leaving fstab untouched."
         return 0
     fi
 
-    info "Optimizing F2FS fstab entries"
-    pacman -S --needed f2fs-tools
+    info "Validating/preserving F2FS options written by format.sh"
+    pacman_install f2fs-tools
     backup_once /etc/fstab
 
-    local root_extra="noatime,lazytime,atgc,gc_merge"
-    local other_extra="noatime,lazytime,atgc,gc_merge"
-    if [[ "$(findmnt -n -o FSTYPE / 2>/dev/null || true)" == f2fs ]]; then
-        # ArchWiki documents rw as a workaround for root remount failures with atgc.
-        add_kernel_arg rw
-        if f2fs_root_has_compression; then
-            root_extra+=",compress_algorithm=zstd:6,compress_chksum"
-            (( F2FS_COMPRESS_ALL )) && root_extra+=",compress_extension=*"
-        else
-            warn "Root F2FS was not formatted with the compression feature; leaving compression mount options out."
-        fi
-    fi
-
+    # format.sh probes every advanced F2FS option against the live kernel before
+    # mounting and writes that exact successful option set to fstab. Do NOT add
+    # atgc/gc_merge/compression blindly here: that was the cause of the old
+    # mount failure. Only ensure the universally safe write-reduction options.
     local tmp
     tmp="$(mktemp)"
-    awk -v root_extra="$root_extra" -v other_extra="$other_extra" '
+    awk '
         BEGIN { OFS="\t" }
         /^[[:space:]]*#/ || NF < 4 { print; next }
         $3 == "f2fs" {
-            n=split($4,a,","); out=""
-            for(i=1;i<=n;i++) {
-                if(a[i] ~ /^(atime|relatime|strictatime|noatime|lazytime|nolazytime|atgc|noatgc|gc_merge|nogc_merge|compress_chksum)$/) continue
-                if(a[i] ~ /^compress_algorithm=/) continue
-                if(a[i] ~ /^compress_extension=/) continue
-                if(a[i] == "defaults") continue
-                out = out (out ? "," : "") a[i]
-            }
-            add = ($2 == "/" ? root_extra : other_extra)
-            $4 = (out ? out "," : "") add
+            opts="," $4 ","
+            if (opts !~ /,noatime,/) $4=$4 ",noatime"
+            opts="," $4 ","
+            if (opts !~ /,lazytime,/) $4=$4 ",lazytime"
+            gsub(/^defaults,/, "", $4)
         }
         { print }
     ' /etc/fstab > "$tmp"
     install -m0644 "$tmp" /etc/fstab
     rm -f "$tmp"
+
+    # New format.sh records the explicit F2FS compression choice. When disabled,
+    # keep all F2FS fstab entries free of compress_* mount options. The on-disk
+    # compression feature itself can only be changed by reformatting.
+    if [[ -f /etc/fedora-arch-layout.conf ]] && grep -qx 'F2FS_COMPRESSION=0' /etc/fedora-arch-layout.conf; then
+        tmp="$(mktemp)"
+        awk '
+            BEGIN { OFS="\t" }
+            /^[[:space:]]*#/ || NF < 4 { print; next }
+            $3 == "f2fs" {
+                n=split($4,a,","); out=""
+                for (i=1;i<=n;i++) {
+                    if (a[i] ~ /^compress(_|$)/) continue
+                    out=out (out ? "," : "") a[i]
+                }
+                $4=out
+            }
+            { print }
+        ' /etc/fstab > "$tmp"
+        install -m0644 "$tmp" /etc/fstab
+        rm -f "$tmp"
+    fi
+
+    # Root F2FS + atgc may need explicit rw during the early root remount.
+    if awk '$1 !~ /^#/ && $2=="/" && $3=="f2fs" && $4 ~ /(^|,)atgc(,|$)/ {found=1} END{exit !found}' /etc/fstab; then
+        add_kernel_arg rw
+    fi
+}
+
+configure_cachyos_system_tuning() {
+    (( PERF_SYSCTL || PERF_IO )) || return 0
+    info "Applying low-bloat CachyOS systemd/THP/realtime defaults"
+
+    install -d /etc/systemd/system.conf.d /etc/systemd/user.conf.d /etc/tmpfiles.d /etc/security/limits.d
+    cat > /etc/systemd/system.conf.d/60-fedora-arch-performance.conf <<'EOF_SYSTEMD_SYS'
+[Manager]
+DefaultTimeoutStartSec=15s
+DefaultTimeoutStopSec=10s
+DefaultLimitNOFILE=2048:2097152
+EOF_SYSTEMD_SYS
+    cat > /etc/systemd/user.conf.d/60-fedora-arch-performance.conf <<'EOF_SYSTEMD_USER'
+[Manager]
+DefaultTimeoutStartSec=15s
+DefaultTimeoutStopSec=10s
+DefaultLimitNOFILE=1024:1048576
+EOF_SYSTEMD_USER
+
+    # CachyOS THP defaults: defer heavy defrag and let khugepaged reclaim sparse
+    # huge pages. w- silently ignores kernels that do not expose a knob.
+    cat > /etc/tmpfiles.d/60-fedora-arch-thp.conf <<'EOF_THP'
+w- /sys/kernel/mm/transparent_hugepage/defrag - - - - defer+madvise
+w- /sys/kernel/mm/transparent_hugepage/khugepaged/max_ptes_none - - - - 409
+EOF_THP
+
+    cat > /etc/security/limits.d/60-fedora-arch-audio.conf <<'EOF_AUDIO_LIMITS'
+@audio - rtprio 99
+EOF_AUDIO_LIMITS
+
+    # Match CachyOS user-session resource delegation. This lets the user
+    # manager/game tooling manage CPU, cpuset, I/O, memory and pid cgroups.
+    install -d /etc/systemd/system/user@.service.d
+    cat > /etc/systemd/system/user@.service.d/60-fedora-arch-delegate.conf <<'EOF_DELEGATE'
+[Service]
+Delegate=cpu cpuset io memory pids
+EOF_DELEGATE
+
+    # CachyOS loads ntsync for Wine/Windows synchronization when the target
+    # kernel actually ships the module. Detect the INSTALLED kernel tree (not
+    # the archiso/chroot host kernel) before enabling it.
+    if find /usr/lib/modules -type f \( -name 'ntsync.ko' -o -name 'ntsync.ko.zst' -o -name 'ntsync.ko.xz' -o -name 'ntsync.ko.gz' \)             -print -quit 2>/dev/null | grep -q .; then
+        install -d /etc/modules-load.d
+        printf '%s\n' ntsync > /etc/modules-load.d/60-fedora-arch-ntsync.conf
+    else
+        rm -f /etc/modules-load.d/60-fedora-arch-ntsync.conf 2>/dev/null || true
+    fi
 }
 
 configure_baloo() {
@@ -1165,23 +1756,30 @@ configure_nvidia_performance() {
     fi
 }
 
-configure_extreme_debloat() {
-    info "Applying selected performance/debloat configuration"
+configure_preboot_tuning() {
+    # These settings must exist before initramfs/bootloader generation because
+    # they affect kernel cmdline, modprobe state, and root mount semantics.
+    info "Applying pre-boot tuning needed for initramfs/bootloader generation"
     configure_kernel_tuning_args
+    configure_f2fs_fstab
+    configure_nvidia_performance
+}
+
+configure_late_performance_tuning() {
+    # Everything else intentionally happens late so aggressive desktop tuning
+    # cannot interfere with package installation or repository bootstrapping.
+    info "Applying late performance/debloat configuration"
     configure_logging
+    configure_syslog
     configure_coredumps
     configure_cpu_performance
     configure_io_performance
     configure_zswap
     configure_vm_sysctl
-    configure_f2fs_fstab
+    configure_cachyos_system_tuning
     configure_baloo
-    configure_nvidia_performance
 }
 
-# -----------------------------------------------------------------------------
-# Plymouth + initramfs
-# -----------------------------------------------------------------------------
 configure_plymouth() {
     info "Configuring Plymouth BGRT"
     local theme=/usr/share/plymouth/themes/bgrt/bgrt.plymouth
@@ -1232,34 +1830,66 @@ configure_initramfs() {
     case "$INITRAMFS" in
         dracut)
             install -d /etc/dracut.conf.d /etc/pacman.d/hooks
-            cat > /etc/dracut.conf.d/10-fedora-arch.conf <<'EOF_DRACUT'
-add_dracutmodules+=" plymouth "
-EOF_DRACUT
+            local root_src root_type root_fs
+            root_src="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+            root_type="$(lsblk -ndo TYPE "$root_src" 2>/dev/null || true)"
+            root_fs="$(findmnt -n -o FSTYPE / 2>/dev/null || true)"
 
-            # ArchWiki's dracut setup: stop mkinitcpio's package hooks from
-            # regenerating competing images. Dracut is the sole generator.
+            {
+                echo 'add_dracutmodules+=" plymouth "'
+                echo 'early_microcode="no"'
+                echo 'dracut_rescue_image="no"'
+                [[ "$root_fs" == f2fs ]] && echo 'force_drivers+=" f2fs "'
+                [[ "$root_src" == /dev/md* || "$root_type" == raid* ]] && echo 'force_add_dracutmodules+=" mdraid "'
+            } > /etc/dracut.conf.d/10-fedora-arch.conf
+
+            # Stop mkinitcpio package hooks; the stock Arch dracut ALPM hooks stay
+            # active and will rebuild pkgbase-named images on future upgrades.
             ln -sfn /dev/null /etc/pacman.d/hooks/90-mkinitcpio-install.hook
             ln -sfn /dev/null /etc/pacman.d/hooks/60-mkinitcpio-remove.hook
             if pacman -Q mkinitcpio >/dev/null 2>&1; then
-                pacman -Rns mkinitcpio || warn "mkinitcpio could not be removed; its hooks are masked."
+                pacman_remove mkinitcpio || warn "mkinitcpio could not be removed; its hooks are masked."
             fi
             if pacman -Q booster >/dev/null 2>&1; then
-                pacman -Rns booster || warn "booster could not be removed; dracut remains selected."
+                pacman_remove booster || warn "booster could not be removed; dracut remains selected."
             fi
 
-            local kver
-            kver="$(kernel_version_for_linux)" || fatal "Could not determine linux kernel version for dracut."
-            dracut --force --kver "$kver" /boot/initramfs-linux.img
-            dracut --force --no-hostonly --kver "$kver" /boot/initramfs-linux-fallback.img
+            # Old installer revisions created a no-hostonly fallback explicitly.
+            # Remove those stale images; current Arch dracut hooks do not create them.
+            rm -f /boot/initramfs-*-fallback.img
+
+            # Generate EVERY installed kernel using Arch's pkgbase names, e.g.
+            # initramfs-linux.img and initramfs-linux-cachyos-bore-lto.img.
+            local p kver pkgbase built=0
+            for p in /usr/lib/modules/*/pkgbase; do
+                [[ -f "$p" ]] || continue
+                read -r pkgbase < "$p"
+                kver="${p#/usr/lib/modules/}"
+                kver="${kver%/pkgbase}"
+                [[ -f "/usr/lib/modules/$kver/vmlinuz" ]] || { warn "Missing vmlinuz for $pkgbase ($kver); skipping"; continue; }
+                install -Dm0644 "/usr/lib/modules/$kver/vmlinuz" "/boot/vmlinuz-$pkgbase"
+                dracut --force -L 3 "/boot/initramfs-$pkgbase.img" --kver "$kver"
+                built=1
+            done
+            (( built )) || fatal "No installed kernel pkgbase entries were found for dracut."
             ;;
         mkinitcpio)
             # python is normally installed by Plasma/GNOME dependencies, but make
             # sure it exists because the hook editor above uses it.
-            pacman -Q python >/dev/null 2>&1 || pacman -S --needed python
+            pacman -Q python >/dev/null 2>&1 || pacman_install python
             mkinitcpio_add_plymouth
             mkinitcpio -P
             ;;
         booster)
+            install -d /etc/pacman.d/hooks
+            ln -sfn /dev/null /etc/pacman.d/hooks/90-mkinitcpio-install.hook
+            ln -sfn /dev/null /etc/pacman.d/hooks/60-mkinitcpio-remove.hook
+            if pacman -Q mkinitcpio >/dev/null 2>&1; then
+                pacman_remove mkinitcpio || warn "mkinitcpio could not be removed; its hooks are masked."
+            fi
+            if pacman -Q dracut >/dev/null 2>&1; then
+                pacman_remove dracut || warn "dracut could not be removed; Booster remains selected."
+            fi
             touch /etc/booster.yaml
             if grep -q '^enable_plymouth:' /etc/booster.yaml; then
                 sed -i 's/^enable_plymouth:.*/enable_plymouth: true/' /etc/booster.yaml
@@ -1295,7 +1925,7 @@ booster_microcode_entry() {
 }
 
 # -----------------------------------------------------------------------------
-# Boot loader — UEFI only, ESP is /boot
+# Boot loader — UEFI only; ESP is /boot or /efi depending on format.sh layout
 # -----------------------------------------------------------------------------
 install_fedora_style_grub_autohide() {
     info "Installing Fedora-style GRUB auto-hide / failed-boot behavior"
@@ -1407,13 +2037,51 @@ EOF_GRUB_INDET
     systemctl enable grub-boot-indeterminate.service >/dev/null 2>&1 || true
 }
 
+install_grub_silent_output_hook() {
+    # "Loading Linux..." and "Loading initial ramdisk..." are generated text,
+    # not messages requiring a custom-compiled GRUB. Sanitize the generated cfg
+    # now and after future grub/linux transactions.
+    install -d /usr/local/sbin /etc/pacman.d/hooks
+    cat > /usr/local/sbin/fedora-arch-grub-silent <<'EOF_GRUB_SILENT'
+#!/usr/bin/env bash
+set -euo pipefail
+cfg=/boot/grub/grub.cfg
+[[ -f "$cfg" ]] || exit 0
+sed -i -E \
+  "/^[[:space:]]*echo[[:space:]]+['\"]?Loading (Linux|initial ramdisk)/d" \
+  "$cfg"
+EOF_GRUB_SILENT
+    chmod 0755 /usr/local/sbin/fedora-arch-grub-silent
+
+    cat > /usr/local/sbin/grub-mkconfig <<'EOF_GRUB_MKCONFIG_WRAPPER'
+#!/usr/bin/env bash
+set -euo pipefail
+/usr/bin/grub-mkconfig "$@"
+/usr/local/sbin/fedora-arch-grub-silent
+EOF_GRUB_MKCONFIG_WRAPPER
+    chmod 0755 /usr/local/sbin/grub-mkconfig
+
+    cat > /etc/pacman.d/hooks/99-fedora-arch-grub-silent.hook <<'EOF_GRUB_SILENT_HOOK'
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = grub
+Target = linux
+
+[Action]
+Description = Removing GRUB Loading Linux/initramdisk messages...
+When = PostTransaction
+Exec = /usr/local/sbin/fedora-arch-grub-silent
+EOF_GRUB_SILENT_HOOK
+}
+
 install_grub() {
-    pacman -S --needed grub efibootmgr
+    pacman_install grub efibootmgr
     backup_once /etc/default/grub
     local extra
     extra="$(kernel_extra_args_string)"
 
-    # Keep Arch identity while reproducing Fedora's successful-boot auto-hide.
     cat > /etc/default/grub <<EOF_GRUB_DEFAULT
 GRUB_DEFAULT=saved
 GRUB_SAVEDEFAULT=true
@@ -1427,17 +2095,17 @@ GRUB_DISABLE_RECOVERY=true
 EOF_GRUB_DEFAULT
 
     install_fedora_style_grub_autohide
+    install_grub_silent_output_hook
 
     grub-install \
         --target=x86_64-efi \
-        --efi-directory=/boot \
+        --efi-directory="$EFI_MOUNT" \
         --bootloader-id=GRUB \
         --removable \
         --recheck
-    grub-mkconfig -o /boot/grub/grub.cfg
+    /usr/bin/grub-mkconfig -o /boot/grub/grub.cfg
+    /usr/local/sbin/fedora-arch-grub-silent
 
-    # First normal boot should be hidden; GRUB resets boot_success to 0 while
-    # booting and the timer sets it back to 1 after a healthy graphical boot.
     grub-editenv /boot/grub/grubenv set menu_auto_hide=1 boot_success=1 boot_indeterminate=0 saved_entry=0
 }
 
@@ -1464,7 +2132,7 @@ EOF_LOADER
 }
 
 install_limine() {
-    pacman -S --needed limine
+    pacman_install limine
     install -d /boot/EFI/BOOT
     install -m0644 /usr/share/limine/BOOTX64.EFI /boot/EFI/BOOT/BOOTX64.EFI
 
@@ -1515,6 +2183,10 @@ post_chroot_install() {
 
     exec > >(tee -a "$LOG_FILE") 2>&1
 
+    # Mask noisy/conflicting package hooks BEFORE the first upgrade transaction.
+    prepare_chroot_transaction_hooks
+    trap 'restore_runtime_packagekit_hook >/dev/null 2>&1 || true' EXIT
+
     configure_repositories_first
     configure_base_identity
     install_kernel_and_boot_core
@@ -1525,14 +2197,26 @@ post_chroot_install() {
         *) fatal "Unknown desktop: $DESKTOP" ;;
     esac
 
+    configure_fish_default
     install_nvidia_580
     configure_services
     install_wallpapers_and_branding
     install_fedora_kde_assets
-    configure_extreme_debloat
+    configure_discover_system_management
+
+    # Kernel/root-FS choices must be settled before initramfs and bootloader.
+    configure_preboot_tuning
     configure_plymouth
     configure_initramfs
     install_bootloader
+
+    # Aggressive desktop/runtime tuning is intentionally last.
+    configure_late_performance_tuning
+
+    # PackageKit's real refresh hook is wanted after first boot; it was masked
+    # only to avoid D-Bus errors while running inside arch-chroot.
+    restore_runtime_packagekit_hook
+    trap - EXIT
 
     echo
     echo '================================================================'
@@ -1541,12 +2225,15 @@ post_chroot_install() {
     echo 'User/hostname:      configured on first boot (OOBE)'
     printf 'Desktop:           %s\n' "$DESKTOP"
     printf 'Fedora app bundle: %s\n' "$([[ $FEDORA_DEFAULT_APPS -eq 1 ]] && echo enabled || echo disabled)"
+    printf 'Discover system:   %s\n' "$([[ $ENABLE_DISCOVER_SYSTEM -eq 1 ]] && echo 'enabled + global spoof' || echo disabled)"
+    printf 'Pastelitto KDE:     %s\n' "$([[ $APPLY_PASTELITTO_KDE -eq 1 ]] && echo enabled || echo disabled)"
+    printf 'Fish default:       %s\n' "$([[ $INSTALL_FISH -eq 1 ]] && echo enabled || echo disabled)"
     printf 'Initramfs:         %s\n' "$INITRAMFS"
     printf 'Boot loader:       %s\n' "$BOOTLOADER"
     printf 'ALHP:              %s\n' "$([[ $ENABLE_ALHP -eq 1 ]] && echo "$ALHP_LEVEL" || echo disabled)"
     printf 'CachyOS repo:      %s\n' "$([[ $ENABLE_CACHYOS -eq 1 ]] && echo enabled || echo disabled)"
     printf 'Chaotic-AUR:       %s\n' "$([[ $ENABLE_CHAOTIC -eq 1 ]] && echo enabled || echo disabled)"
-    printf 'zswap:             enabled (zstd, 30%% pool, swappiness=100)\n'
+    printf 'zswap:             enabled (lz4, 30%% pool, swappiness=100; zram off)\n'
     printf 'Performance:       %s\n' "$PERF_PROFILE"
     printf 'Logging profile:   %s\n' "$LOGGING_PROFILE"
     printf 'Kernel args:        %s\n' "$(kernel_extra_args_string)"
