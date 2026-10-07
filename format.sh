@@ -43,7 +43,7 @@ require_uefi() {
 
 ensure_live_tools() {
     local missing=0 cmd
-    for cmd in dialog sgdisk partprobe mkfs.fat mkfs.f2fs mkfs.ext4 mkfs.xfs mkfs.btrfs \
+    for cmd in dialog sgdisk partprobe mkfs.fat mkfs.f2fs mkfs.ext4 tune2fs mkfs.xfs mkfs.btrfs \
                pacstrap arch-chroot git blkid findmnt swapon mdadm wipefs blockdev; do
         command -v "$cmd" >/dev/null 2>&1 || missing=1
     done
@@ -364,10 +364,23 @@ collect_f2fs_compression_choice() {
     fi
 }
 
+collect_ext4_extreme_choice() {
+    EXT4_EXTREME=0
+    if [[ "${ROOT_FS:-}" == ext4 || "${HOME_FS:-}" == ext4 ]]; then
+        if dialog --title "Extreme ext4 performance" --defaultno \
+            --yes-label 'Enable extreme tuning' --no-label 'Keep safe defaults' --yesno \
+            "Apply extreme ext4 performance tuning to root/home ext4 filesystems?\n\nMount options:\nrw,noatime,lazytime,commit=60,data=writeback,journal_async_commit,barrier=0\n\nThis keeps metadata journaling, but weakens write ordering and local power-loss protection. Use it only with storage that has trustworthy power-loss protection and a system whose data-loss risk you accept.\n\nThe installed system will also use 128 MiB/1 GiB dirty-page limits, 1-second writeback checks, 10-second dirty expiry, and periodic TRIM.\n\nDefault: NO." \
+            22 94; then
+            EXT4_EXTREME=1
+        fi
+    fi
+}
+
 collect_md_layout() {
     choose_linux_fs "RAID root filesystem" f2fs
     ROOT_FS="$REPLY"
     collect_f2fs_compression_choice
+    collect_ext4_extreme_choice
     choose_boot_target_for_md
     ROOT_PART="$RAID_ROOT"
     HOME_PART=""
@@ -378,7 +391,7 @@ collect_md_layout() {
 
 confirm_md_format() {
     local typed summary
-    summary="Root MD array: $RAID_ROOT -> $ROOT_FS\nF2FS compression: $([[ ${F2FS_COMPRESSION:-0} -eq 1 ]] && echo enabled || echo disabled)\n"
+    summary="Root MD array: $RAID_ROOT -> $ROOT_FS\nF2FS compression: $([[ ${F2FS_COMPRESSION:-0} -eq 1 ]] && echo enabled || echo disabled)\nExtreme ext4 tuning: $([[ ${EXT4_EXTREME:-0} -eq 1 ]] && echo enabled || echo disabled)\n"
     if [[ "$RAID_BOOT_TYPE" == disk ]]; then
         summary+="/boot device: $RAID_BOOT_TARGET (WHOLE DISK will be repartitioned; ${BOOT_GIB} GiB FAT32 ESP)\n"
     else
@@ -435,7 +448,7 @@ collect_existing_mount_layout() {
     BOOT_PART="$REPLY"; ESP_PART="$REPLY"
     local bfs="$(lsblk -no FSTYPE "$BOOT_PART" | head -n1)"
     [[ "$bfs" == vfat ]] || fatal "Mount-existing mode currently requires a preformatted FAT32/vfat /boot partition."
-    BOOT_FS=fat32; BOOT_GIB=0; SWAP_GIB=0; SWAP_PART=""; CREATE_HOME=0; HOME_FS=""; HOME_PART=""; F2FS_COMPRESSION=0
+    BOOT_FS=fat32; BOOT_GIB=0; SWAP_GIB=0; SWAP_PART=""; CREATE_HOME=0; HOME_FS=""; HOME_PART=""; F2FS_COMPRESSION=0; EXT4_EXTREME=0
 }
 
 storage_menu() {
@@ -526,6 +539,7 @@ collect_layout() {
     fi
 
     collect_f2fs_compression_choice
+    collect_ext4_extreme_choice
 
     local extra_esp=0
     [[ "$BOOT_FS" != fat32 ]] && extra_esp=1
@@ -549,6 +563,9 @@ confirm_destroy() {
         summary+="/:     ${ROOT_GIB} GiB ${ROOT_FS}\n/home:  remainder ${HOME_FS}\n"
     else
         summary+="/:     all remaining space ${ROOT_FS}\n"
+    fi
+    if (( ${EXT4_EXTREME:-0} )); then
+        summary+="ext4:  EXTREME performance tuning (writeback, async commit, barriers off)\n"
     fi
     summary+="\nTHIS ERASES THE ENTIRE TARGET DISK."
 
@@ -668,7 +685,15 @@ format_linux_fs() {
             fi
             mkfs.f2fs -f -l "$label" -i -t 1 -O "$features" "$dev"
             ;;
-        ext4) mkfs.ext4 -F -L "$label" "$dev" ;;
+        ext4)
+            mkfs.ext4 -F -L "$label" "$dev"
+            if (( ${EXT4_EXTREME:-0} )) && [[ "$role" != boot ]]; then
+                # Store the two early/root-mount-sensitive defaults in the
+                # superblock as well as writing their explicit fstab forms.
+                # Keep the journal: only its data mode and barriers change.
+                tune2fs -o journal_data_writeback,nobarrier "$dev"
+            fi
+            ;;
         btrfs) mkfs.btrfs -f -L "$label" "$dev" ;;
         xfs) mkfs.xfs -f -L "$label" "$dev" ;;
         *) fatal "Unsupported Linux filesystem: $fs" ;;
@@ -699,7 +724,13 @@ base_mount_opts() {
     fi
     case "$fs" in
         fat32) printf 'rw,noatime,umask=0077' ;;
-        ext4)  printf 'rw,noatime,lazytime,commit=60' ;;
+        ext4)
+            if (( ${EXT4_EXTREME:-0} )); then
+                printf 'rw,noatime,lazytime,commit=60,data=writeback,journal_async_commit,barrier=0'
+            else
+                printf 'rw,noatime,lazytime,commit=60'
+            fi
+            ;;
         xfs)   printf 'rw,noatime,lazytime,inode64' ;;
         btrfs) printf 'rw,noatime,lazytime,compress=zstd:3,discard=async' ;;
         *)     printf 'rw,noatime,lazytime' ;;
@@ -775,6 +806,9 @@ mount_verified() {
     else
         opts="$(base_mount_opts "$fs" "$role")"
         if ! probe_mount_set "$fs" "$dev" "$opts"; then
+            if [[ "$fs" == ext4 && "$role" != boot ]] && (( ${EXT4_EXTREME:-0} )); then
+                fatal "The selected extreme ext4 option set was rejected for $dev; refusing to install with silently reduced tuning."
+            fi
             warn "$fs tuned option set was rejected; falling back to rw,noatime,lazytime"
             opts="rw,noatime,lazytime"
             if ! probe_mount_set "$fs" "$dev" "$opts"; then
@@ -881,6 +915,7 @@ BOOT_FS=$BOOT_FS
 ROOT_FS=$ROOT_FS
 HOME_FS=$HOME_FS
 F2FS_COMPRESSION=${F2FS_COMPRESSION:-0}
+EXT4_EXTREME=${EXT4_EXTREME:-0}
 ROOT_ON_MD=$([[ "${ROOT_PART:-}" == /dev/md* ]] && echo 1 || echo 0)
 EOF_LAYOUT
 }
